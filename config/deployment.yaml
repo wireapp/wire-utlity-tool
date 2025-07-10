@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wire-utility-operator
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wire-utility-operator
+  template:
+    metadata:
+      labels:
+        app: wire-utility-operator
+    spec:
+      serviceAccountName: wire-utility-operator
+      containers:
+      - name: manager
+        image: sukisuk/wire-utility-operator:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: metrics
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 100m
+            memory: 64Mi
