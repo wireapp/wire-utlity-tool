@@ -27,11 +27,11 @@ func main() {
 		panic(err)
 	}
 
-	if err := (&controllers.ServiceSecretWatcher{
+	if err := (&controllers.ServiceDiscoveryController{
 		Client: mgr.GetClient(),
-		Log:    ctrl.Log.WithName("watcher"),
+		Log:    ctrl.Log.WithName("service-discovery"),
 	}).SetupWithManager(mgr); err != nil {
-		ctrl.Log.Error(err, "unable to create controller", "controller", "ServiceSecretWatcher")
+		ctrl.Log.Error(err, "unable to create controller", "controller", "ServiceDiscoveryController")
 		panic(err)
 	}
 	ctrl.Log.Info("starting manager")

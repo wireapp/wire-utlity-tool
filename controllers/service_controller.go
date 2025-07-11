@@ -10,42 +10,56 @@ import (
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
 
-type ServiceSecretWatcher struct {
+type ServiceDiscoveryController struct {
 	client.Client
 	Log                   logr.Logger
 	lastDiscoveredSecrets map[string]corev1.Secret
+	lastDiscoveredHash    string
 	deploymentName        string
 	deploymentNamespace   string
+	configMapName         string
 }
 
-func (s *ServiceSecretWatcher) SetupWithManager(mgr manager.Manager) error {
+func (s *ServiceDiscoveryController) SetupWithManager(mgr manager.Manager) error {
 	// Initialize tracking
 	s.lastDiscoveredSecrets = make(map[string]corev1.Secret)
-	s.deploymentName = "wire-utility-operator" // Your deployment name
-	s.deploymentNamespace = "default"          // Your deployment namespace
+	s.deploymentName = "wire-utility-operator" // deployment name
+	s.deploymentNamespace = "default"          // deployment namespace
+	s.configMapName = "service-endpoints"      // ConfigMap to store discovered service endpoints
 
-	go func() {
-		if mgr.GetCache().WaitForCacheSync(context.Background()) {
-			s.Log.Info("Cache is synced, starting to discover and update deployment")
-			s.discoverAndUpdateDeployment()
-		}
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			s.discoverAndUpdateDeployment()
-		}
-	}()
-	return nil
+	// Set up the controller to watch for changes using proper controller-runtime pattern
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&corev1.Secret{}).                                          // Watch for Secret changes
+		Watches(&corev1.Service{}, &handler.EnqueueRequestForObject{}). // Watch for Service changes
+		Complete(s)
 }
 
-func (s *ServiceSecretWatcher) discoverAndUpdateDeployment() {
-	_, secrets := s.listServicesAndSecrets()
+// Reconcile is the main reconciliation logic triggered by Kubernetes events
+func (s *ServiceDiscoveryController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	s.Log.Info("Reconciliation triggered", "request", req)
 
-	// Filter for service-related secrets
+	//  List all services and secrets
+	services, secrets := s.listServicesAndSecrets()
+
+	// Process service discovery
+	serviceEndpoints := s.discoverServiceEndpoints(services)
+	if len(serviceEndpoints) > 0 {
+		if err := s.createOrUpdateServiceConfigMap(serviceEndpoints); err != nil {
+			s.Log.Error(err, "Failed to create/update service endpoints ConfigMap")
+			return ctrl.Result{RequeueAfter: time.Minute}, err
+		} else {
+			s.Log.Info("Successfully updated service endpoints ConfigMap", "endpoints", len(serviceEndpoints))
+		}
+	}
+
+	//  Process secrets
 	serviceSecrets := s.filterServiceSecrets(secrets)
 
 	if len(serviceSecrets) > 0 && s.hasNewSecrets(serviceSecrets) {
@@ -54,15 +68,19 @@ func (s *ServiceSecretWatcher) discoverAndUpdateDeployment() {
 
 		if err := s.updateDeploymentWithSecrets(serviceSecrets); err != nil {
 			s.Log.Error(err, "Failed to update deployment with secrets")
+			return ctrl.Result{RequeueAfter: time.Minute}, err
 		} else {
 			s.Log.Info("Successfully updated deployment with service secrets")
 			// Update tracking
 			s.updateSecretsTracking(serviceSecrets)
 		}
 	}
+
+	s.Log.Info("Reconciliation completed successfully")
+	return ctrl.Result{RequeueAfter: time.Minute * 5}, nil // Requeue every 5 minutes as backup
 }
 
-func (s *ServiceSecretWatcher) listServicesAndSecrets() ([]corev1.Service, []corev1.Secret) {
+func (s *ServiceDiscoveryController) listServicesAndSecrets() ([]corev1.Service, []corev1.Secret) {
 	ctx := context.Background()
 
 	// List services
@@ -94,7 +112,7 @@ func (s *ServiceSecretWatcher) listServicesAndSecrets() ([]corev1.Service, []cor
 	return serviceList, secretList
 }
 
-func (s *ServiceSecretWatcher) filterServiceSecrets(secrets []corev1.Secret) []corev1.Secret {
+func (s *ServiceDiscoveryController) filterServiceSecrets(secrets []corev1.Secret) []corev1.Secret {
 	var serviceSecrets []corev1.Secret
 
 	for _, secret := range secrets {
@@ -107,7 +125,7 @@ func (s *ServiceSecretWatcher) filterServiceSecrets(secrets []corev1.Secret) []c
 	return serviceSecrets
 }
 
-func (s *ServiceSecretWatcher) isServiceSecret(secret corev1.Secret) bool {
+func (s *ServiceDiscoveryController) isServiceSecret(secret corev1.Secret) bool {
 	// Skip system secrets
 	if secret.Type == corev1.SecretTypeServiceAccountToken ||
 		secret.Type == corev1.SecretTypeDockercfg ||
@@ -145,7 +163,7 @@ func (s *ServiceSecretWatcher) isServiceSecret(secret corev1.Secret) bool {
 	return hasServiceKeys
 }
 
-func (s *ServiceSecretWatcher) getSecretServiceType(secret corev1.Secret) string {
+func (s *ServiceDiscoveryController) getSecretServiceType(secret corev1.Secret) string {
 	name := strings.ToLower(secret.Name)
 
 	if strings.Contains(name, "minio") {
@@ -167,7 +185,7 @@ func (s *ServiceSecretWatcher) getSecretServiceType(secret corev1.Secret) string
 	return "unknown"
 }
 
-func (s *ServiceSecretWatcher) hasNewSecrets(currentSecrets []corev1.Secret) bool {
+func (s *ServiceDiscoveryController) hasNewSecrets(currentSecrets []corev1.Secret) bool {
 	// Check deployment annotation to see if we've already processed these secrets
 	ctx := context.Background()
 	deployment := &appsv1.Deployment{}
@@ -232,7 +250,7 @@ func (s *ServiceSecretWatcher) hasNewSecrets(currentSecrets []corev1.Secret) boo
 	return true
 }
 
-func (s *ServiceSecretWatcher) updateDeploymentWithSecrets(secrets []corev1.Secret) error {
+func (s *ServiceDiscoveryController) updateDeploymentWithSecrets(secrets []corev1.Secret) error {
 	ctx := context.Background()
 
 	// Get current deployment
@@ -324,7 +342,7 @@ func (s *ServiceSecretWatcher) updateDeploymentWithSecrets(secrets []corev1.Secr
 	return nil
 }
 
-func (s *ServiceSecretWatcher) removeServiceSecretMounts(mounts []corev1.VolumeMount) []corev1.VolumeMount {
+func (s *ServiceDiscoveryController) removeServiceSecretMounts(mounts []corev1.VolumeMount) []corev1.VolumeMount {
 	var filtered []corev1.VolumeMount
 	for _, mount := range mounts {
 		// Keep mounts that are not service secret mounts
@@ -335,7 +353,7 @@ func (s *ServiceSecretWatcher) removeServiceSecretMounts(mounts []corev1.VolumeM
 	return filtered
 }
 
-func (s *ServiceSecretWatcher) removeServiceSecretVolumes(volumes []corev1.Volume) []corev1.Volume {
+func (s *ServiceDiscoveryController) removeServiceSecretVolumes(volumes []corev1.Volume) []corev1.Volume {
 	var filtered []corev1.Volume
 	for _, volume := range volumes {
 		// Keep volumes that don't start with "secret-"
@@ -346,7 +364,7 @@ func (s *ServiceSecretWatcher) removeServiceSecretVolumes(volumes []corev1.Volum
 	return filtered
 }
 
-func (s *ServiceSecretWatcher) updateSecretsTracking(secrets []corev1.Secret) {
+func (s *ServiceDiscoveryController) updateSecretsTracking(secrets []corev1.Secret) {
 	s.lastDiscoveredSecrets = make(map[string]corev1.Secret)
 	for _, secret := range secrets {
 		s.lastDiscoveredSecrets[secret.Name] = secret
@@ -354,7 +372,7 @@ func (s *ServiceSecretWatcher) updateSecretsTracking(secrets []corev1.Secret) {
 }
 
 // calculateSecretsHash creates a hash of the current secrets for comparison
-func (s *ServiceSecretWatcher) calculateSecretsHash(secrets []corev1.Secret) string {
+func (s *ServiceDiscoveryController) calculateSecretsHash(secrets []corev1.Secret) string {
 	var secretNames []string
 	for _, secret := range secrets {
 		// Use name and resource version for hash
@@ -374,4 +392,222 @@ func (s *ServiceSecretWatcher) calculateSecretsHash(secrets []corev1.Secret) str
 	}
 
 	return fmt.Sprintf("%x", hash)
+}
+
+// Service discovery and ConfigMap management methods
+
+// ServiceEndpoint represents a discovered service endpoint
+type ServiceEndpoint struct {
+	Name      string
+	Type      string
+	Host      string
+	Port      int32
+	Namespace string
+}
+
+// discoverServiceEndpoints discovers services based on naming patterns and extracts endpoints
+// Update the discoverServiceEndpoints method
+func (s *ServiceDiscoveryController) discoverServiceEndpoints(services []corev1.Service) []ServiceEndpoint {
+	var endpoints []ServiceEndpoint
+
+	// Define service prefixes we're interested in
+	servicePrefixes := []string{"minio", "cassandra", "rabbitmq", "postgresql", "postgres", "redis", "mysql", "mongodb"}
+
+	for _, service := range services {
+		serviceName := strings.ToLower(service.Name)
+
+		// Check if this service matches our patterns
+		serviceType := ""
+		for _, prefix := range servicePrefixes {
+			if strings.HasPrefix(serviceName, prefix) {
+				serviceType = prefix
+				break
+			}
+		}
+
+		if serviceType == "" {
+			continue // Skip services that don't match our patterns
+		}
+
+		// Extract primary port (usually the first port)
+		if len(service.Spec.Ports) == 0 {
+			s.Log.Info("Service has no ports, skipping", "service", service.Name)
+			continue
+		}
+
+		port := service.Spec.Ports[0].Port
+
+		// Always use DNS name for better reliability (especially for MinIO)
+		host := service.Name
+		if service.Namespace != s.deploymentNamespace {
+			host = fmt.Sprintf("%s.%s.svc.cluster.local", service.Name, service.Namespace)
+		}
+
+		endpoint := ServiceEndpoint{
+			Name:      service.Name,
+			Type:      serviceType,
+			Host:      host,
+			Port:      port,
+			Namespace: service.Namespace,
+		}
+
+		endpoints = append(endpoints, endpoint)
+		s.Log.Info("Discovered service endpoint",
+			"name", endpoint.Name,
+			"type", endpoint.Type,
+			"host", endpoint.Host,
+			"port", endpoint.Port)
+	}
+
+	return endpoints
+}
+
+// Update the createOrUpdateServiceConfigMap method to use cleaner key names
+func (s *ServiceDiscoveryController) createOrUpdateServiceConfigMap(endpoints []ServiceEndpoint) error {
+	ctx := context.Background()
+
+	// Build ConfigMap data with cleaner key names
+	data := make(map[string]string)
+
+	for _, endpoint := range endpoints {
+		// Use service type for cleaner keys (minio, rabbitmq, etc.)
+		serviceType := endpoint.Type
+
+		// Create simple, predictable key names
+		data[fmt.Sprintf("%s-host", serviceType)] = endpoint.Host
+		data[fmt.Sprintf("%s-port", serviceType)] = fmt.Sprintf("%d", endpoint.Port)
+		data[fmt.Sprintf("%s-endpoint", serviceType)] = fmt.Sprintf("http://%s:%d", endpoint.Host, endpoint.Port)
+
+		s.Log.Info("Added service endpoint to ConfigMap",
+			"serviceType", serviceType,
+			"endpoint", data[fmt.Sprintf("%s-endpoint", serviceType)])
+	}
+
+	// Create ConfigMap object
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      s.configMapName,
+			Namespace: s.deploymentNamespace,
+			Labels: map[string]string{
+				"app":        "wire-utility-operator",
+				"component":  "service-discovery",
+				"managed-by": "wire-utility-operator",
+			},
+		},
+		Data: data,
+	}
+
+	// Try to get existing ConfigMap
+	existing := &corev1.ConfigMap{}
+	err := s.Client.Get(ctx, client.ObjectKey{
+		Name:      s.configMapName,
+		Namespace: s.deploymentNamespace,
+	}, existing)
+
+	if err != nil {
+		// ConfigMap doesn't exist, create it
+		s.Log.Info("Creating new service endpoints ConfigMap", "name", s.configMapName, "entries", len(data))
+		if err := s.Client.Create(ctx, configMap); err != nil {
+			return fmt.Errorf("failed to create ConfigMap: %w", err)
+		}
+	} else {
+		// ConfigMap exists, update it
+		existing.Data = data
+		existing.Labels = configMap.Labels
+		s.Log.Info("Updating existing service endpoints ConfigMap", "name", s.configMapName, "entries", len(data))
+		if err := s.Client.Update(ctx, existing); err != nil {
+			return fmt.Errorf("failed to update ConfigMap: %w", err)
+		}
+	}
+
+	// Ensure the deployment mounts this ConfigMap
+	return s.ensureConfigMapMounted()
+}
+
+// ensureConfigMapMounted ensures the operator deployment mounts the service endpoints ConfigMap
+func (s *ServiceDiscoveryController) ensureConfigMapMounted() error {
+	ctx := context.Background()
+
+	// Get current deployment
+	deployment := &appsv1.Deployment{}
+	err := s.Client.Get(ctx, client.ObjectKey{
+		Name:      s.deploymentName,
+		Namespace: s.deploymentNamespace,
+	}, deployment)
+	if err != nil {
+		return fmt.Errorf("failed to get deployment %s/%s: %w", s.deploymentNamespace, s.deploymentName, err)
+	}
+
+	// Check if ConfigMap is already mounted
+	configMapVolumeName := fmt.Sprintf("configmap-%s", s.configMapName)
+	configMapMountPath := "/etc/wire-services/endpoints"
+
+	needsUpdate := false
+
+	// Check volumes
+	hasConfigMapVolume := false
+	for _, volume := range deployment.Spec.Template.Spec.Volumes {
+		if volume.Name == configMapVolumeName {
+			hasConfigMapVolume = true
+			break
+		}
+	}
+
+	if !hasConfigMapVolume {
+		// Add ConfigMap volume
+		volume := corev1.Volume{
+			Name: configMapVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: s.configMapName,
+					},
+				},
+			},
+		}
+		deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, volume)
+		needsUpdate = true
+		s.Log.Info("Added ConfigMap volume to deployment")
+	}
+
+	// Check volume mounts in the first container
+	if len(deployment.Spec.Template.Spec.Containers) > 0 {
+		container := &deployment.Spec.Template.Spec.Containers[0]
+
+		hasConfigMapMount := false
+		for _, mount := range container.VolumeMounts {
+			if mount.Name == configMapVolumeName {
+				hasConfigMapMount = true
+				break
+			}
+		}
+
+		if !hasConfigMapMount {
+			// Add ConfigMap volume mount
+			volumeMount := corev1.VolumeMount{
+				Name:      configMapVolumeName,
+				MountPath: configMapMountPath,
+				ReadOnly:  true,
+			}
+			container.VolumeMounts = append(container.VolumeMounts, volumeMount)
+			needsUpdate = true
+			s.Log.Info("Added ConfigMap volume mount to container", "mountPath", configMapMountPath)
+		}
+	}
+
+	// Update deployment if needed
+	if needsUpdate {
+		// Add annotation to trigger rolling update
+		if deployment.Spec.Template.Annotations == nil {
+			deployment.Spec.Template.Annotations = make(map[string]string)
+		}
+		deployment.Spec.Template.Annotations["wire-utility/config-update"] = time.Now().Format(time.RFC3339)
+
+		if err := s.Client.Update(ctx, deployment); err != nil {
+			return fmt.Errorf("failed to update deployment with ConfigMap mount: %w", err)
+		}
+
+		s.Log.Info("Successfully updated deployment with ConfigMap mount")
+	}
+	return nil
 }
