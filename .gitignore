@@ -22,6 +22,8 @@ go.work
 # editor and IDE paraphernalia
 .idea
 .vscode
+.devcontainer
+manager
 *.swp
 *.swo
 *~
