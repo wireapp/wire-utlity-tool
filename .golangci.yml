@@ -1,52 +1,35 @@
-version: "2"
 run:
-  allow-parallel-runners: true
+  timeout: 5m
+  modules-download-mode: readonly
+
 linters:
-  default: none
   enable:
-    - copyloopvar
-    - dupl
     - errcheck
-    - ginkgolinter
-    - goconst
-    - gocyclo
+    - gosimple
     - govet
     - ineffassign
-    - lll
-    - misspell
-    - nakedret
-    - prealloc
-    - revive
     - staticcheck
-    - unconvert
-    - unparam
+    - typecheck
     - unused
-  settings:
-    revive:
-      rules:
-        - name: comment-spacings
-        - name: import-shadowing
-  exclusions:
-    generated: lax
-    rules:
-      - linters:
-          - lll
-        path: api/*
-      - linters:
-          - dupl
-          - lll
-        path: internal/*
-    paths:
-      - third_party$
-      - builtin$
-      - examples$
-formatters:
-  enable:
     - gofmt
     - goimports
-  exclusions:
-    generated: lax
-    paths:
-      - third_party$
-      - builtin$
-      - examples$
+    - misspell
+    - unconvert
+    - unparam
+
+linters-settings:
+  gofmt:
+    simplify: true
+  goimports:
+    local-prefixes: github.com/your-username/wire-utility-operator
+
+issues:
+  exclude-use-default: false
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosec
+    - text: "ST1000:"
+      linters:
+        - stylecheck

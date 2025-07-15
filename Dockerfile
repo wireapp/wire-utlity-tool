@@ -1,7 +1,8 @@
 # Build the manager binary
-FROM golang:1.24 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.24 AS builder
 ARG TARGETOS
 ARG TARGETARCH
+ARG BUILDPLATFORM
 
 WORKDIR /workspace
 
@@ -16,11 +17,12 @@ RUN go mod download
 COPY cmd/ cmd/
 COPY controllers/ controllers/
 
-# Build the binary
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
+# Build the binary with proper architecture
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -a -o manager cmd/main.go
 
 # Use Alpine as base image for smaller size and utilities
-FROM alpine:3.19
+FROM --platform=$TARGETPLATFORM alpine:3.19
 
 # Install essential utilities
 RUN apk add --no-cache \
@@ -32,14 +34,19 @@ RUN apk add --no-cache \
     bind-tools \
     jq
 
-# Install MinIO client
-RUN wget https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc && \
+# Install MinIO client for the target architecture
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        wget https://dl.min.io/client/mc/release/linux-arm64/mc -O /usr/local/bin/mc; \
+    else \
+        wget https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc; \
+    fi && \
     chmod +x /usr/local/bin/mc
 
 # Create non-root user
 RUN adduser -D -s /bin/bash -u 65532 nonroot
 
-# Create service directories matching the controller's mount paths
+# Create service directories
 RUN mkdir -p /etc/wire-services/minio \
              /etc/wire-services/rabbitmq \
              /etc/wire-services/cassandra \
@@ -53,12 +60,12 @@ RUN mkdir -p /etc/wire-services/minio \
 RUN mkdir -p /usr/local/bin/wire-utils && \
     chown -R 65532:65532 /usr/local/bin/wire-utils
 
-# Copy and setup scripts
+# Copy scripts to wire-utils directory
 COPY scripts/ /usr/local/bin/wire-utils/
 RUN find /usr/local/bin/wire-utils -name "*.sh" -exec chmod +x {} \; && \
     chown -R 65532:65532 /usr/local/bin/wire-utils
 
-# Create convenient symlinks
+# Create symlinks for easier access
 RUN ln -s /usr/local/bin/wire-utils/connect-minio.sh /usr/local/bin/connect-minio.sh
 
 # Copy the manager binary

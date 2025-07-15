@@ -17,6 +17,34 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
 
+const (
+	serviceTypeMinio     = "minio"
+	serviceTypeRabbitMQ  = "rabbitmq"
+	serviceTypeCassandra = "cassandra"
+	serviceTypePostgres  = "postgres"
+	serviceTypeRedis     = "redis"
+)
+
+var (
+	TARGET_SERVICE_TYPES = []string{
+		serviceTypeMinio,
+		serviceTypeRabbitMQ,
+		serviceTypeCassandra,
+		serviceTypePostgres,
+		serviceTypeRedis,
+	}
+)
+
+// Add this helper function after the constants section
+func sanitizeVolumeName(name string) string {
+	// Replace dots and other invalid characters with dashes
+	sanitized := strings.ReplaceAll(name, ".", "-")
+	sanitized = strings.ReplaceAll(sanitized, "_", "-")
+	// Ensure it doesn't end with a dash
+	sanitized = strings.Trim(sanitized, "-")
+	return sanitized
+}
+
 type ServiceDiscoveryController struct {
 	client.Client
 	Log                   logr.Logger
@@ -135,53 +163,28 @@ func (s *ServiceDiscoveryController) isServiceSecret(secret corev1.Secret) bool 
 
 	name := strings.ToLower(secret.Name)
 
-	// Check for known service patterns in name
-	servicePatterns := []string{"minio", "rabbitmq", "cassandra", "postgres", "redis", "mysql"}
-	for _, pattern := range servicePatterns {
-		if strings.Contains(name, pattern) {
+	if strings.Contains(name, "helm.release") || strings.HasPrefix(name, "sh.helm") {
+		return false
+	}
+
+	for _, serviceType := range TARGET_SERVICE_TYPES {
+		if strings.Contains(name, serviceType) {
 			return true
 		}
 	}
 
-	// Check for service-like data keys
-	hasServiceKeys := false
-	serviceKeys := []string{"username", "password", "access-key", "secret-key", "endpoint", "host", "port"}
-
-	for key := range secret.Data {
-		keyLower := strings.ToLower(key)
-		for _, serviceKey := range serviceKeys {
-			if strings.Contains(keyLower, serviceKey) {
-				hasServiceKeys = true
-				break
-			}
-		}
-		if hasServiceKeys {
-			break
-		}
-	}
-
-	return hasServiceKeys
+	return false
 }
 
 func (s *ServiceDiscoveryController) getSecretServiceType(secret corev1.Secret) string {
-	name := strings.ToLower(secret.Name)
+	secretName := strings.ToLower(secret.Name)
 
-	if strings.Contains(name, "minio") {
-		return "minio"
+	// Map secret names to service types
+	for _, serviceType := range TARGET_SERVICE_TYPES {
+		if strings.Contains(secretName, serviceType) {
+			return serviceType
+		}
 	}
-	if strings.Contains(name, "rabbitmq") {
-		return "rabbitmq"
-	}
-	if strings.Contains(name, "cassandra") {
-		return "cassandra"
-	}
-	if strings.Contains(name, "postgres") {
-		return "postgres"
-	}
-	if strings.Contains(name, "redis") {
-		return "redis"
-	}
-
 	return "unknown"
 }
 
@@ -276,9 +279,10 @@ func (s *ServiceDiscoveryController) updateDeploymentWithSecrets(secrets []corev
 		serviceType := s.getSecretServiceType(secret)
 		mountPath := fmt.Sprintf("/etc/wire-services/%s/%s", serviceType, secret.Name)
 
+		sanitizedVolumeName := fmt.Sprintf("secret-%s", sanitizeVolumeName(secret.Name))
 		// Create volume mount
 		volumeMount := corev1.VolumeMount{
-			Name:      fmt.Sprintf("secret-%s", secret.Name),
+			Name:      sanitizedVolumeName,
 			MountPath: mountPath,
 			ReadOnly:  true,
 		}
@@ -286,7 +290,7 @@ func (s *ServiceDiscoveryController) updateDeploymentWithSecrets(secrets []corev
 
 		// Create volume
 		volume := corev1.Volume{
-			Name: fmt.Sprintf("secret-%s", secret.Name),
+			Name: sanitizedVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName: secret.Name,
@@ -297,6 +301,7 @@ func (s *ServiceDiscoveryController) updateDeploymentWithSecrets(secrets []corev
 
 		s.Log.Info("Prepared secret mount",
 			"secret", secret.Name,
+			"volumeName", sanitizedVolumeName,
 			"type", serviceType,
 			"mountPath", mountPath)
 	}
@@ -405,22 +410,17 @@ type ServiceEndpoint struct {
 	Namespace string
 }
 
-// discoverServiceEndpoints discovers services based on naming patterns and extracts endpoints
-// Update the discoverServiceEndpoints method
 func (s *ServiceDiscoveryController) discoverServiceEndpoints(services []corev1.Service) []ServiceEndpoint {
 	var endpoints []ServiceEndpoint
-
-	// Define service prefixes we're interested in
-	servicePrefixes := []string{"minio", "cassandra", "rabbitmq", "postgresql", "postgres", "redis", "mysql", "mongodb"}
 
 	for _, service := range services {
 		serviceName := strings.ToLower(service.Name)
 
 		// Check if this service matches our patterns
 		serviceType := ""
-		for _, prefix := range servicePrefixes {
-			if strings.HasPrefix(serviceName, prefix) {
-				serviceType = prefix
+		for _, targetType := range TARGET_SERVICE_TYPES {
+			if strings.HasPrefix(serviceName, targetType) {
+				serviceType = targetType
 				break
 			}
 		}
@@ -437,7 +437,7 @@ func (s *ServiceDiscoveryController) discoverServiceEndpoints(services []corev1.
 
 		port := service.Spec.Ports[0].Port
 
-		// Always use DNS name for better reliability (especially for MinIO)
+		// Always use DNS name for better reliability
 		host := service.Name
 		if service.Namespace != s.deploymentNamespace {
 			host = fmt.Sprintf("%s.%s.svc.cluster.local", service.Name, service.Namespace)
