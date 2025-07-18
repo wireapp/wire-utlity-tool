@@ -1,0 +1,79 @@
+# Use Debian Bullseye Slim as base image for better legacy support
+FROM --platform=$TARGETPLATFORM debian:bullseye-slim
+
+# Install essential utilities and networking tools, plus python2 and pip2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    bash-completion \
+    readline-common \
+    libreadline8 \
+    curl \
+    ca-certificates \
+    wget \
+    netcat-openbsd \
+    dnsutils \
+    jq \
+    python2 \
+    python2-dev \
+    python3 \
+    python3-pip \
+    openssl \
+    iputils-ping \
+    traceroute \
+    tcpdump \
+    nmap \
+    tree \
+    file \
+    less \
+    vim \
+    nano \
+    findutils \
+    coreutils \
+    util-linux \
+    postgresql-client \
+    redis-tools \
+ && curl https://bootstrap.pypa.io/pip/2.7/get-pip.py -o get-pip.py \
+ && python2 get-pip.py \
+ && rm get-pip.py \
+ && rm -rf /var/lib/apt/lists/*
+
+# Download and install Cassandra 3.11 cqlsh (compatible version)
+RUN mkdir -p /opt/cassandra && \
+    cd /opt/cassandra && \
+    wget https://archive.apache.org/dist/cassandra/3.11.16/apache-cassandra-3.11.16-bin.tar.gz && \
+    tar -xzf apache-cassandra-3.11.16-bin.tar.gz && \
+    rm apache-cassandra-3.11.16-bin.tar.gz
+
+# Create wrapper that adds PYTHONPATH and calls correct cqlsh script using python2
+RUN printf '#!/bin/bash\nexport PYTHONPATH="/opt/cassandra/apache-cassandra-3.11.16/pylib:$PYTHONPATH"\nexec python2 /opt/cassandra/apache-cassandra-3.11.16/bin/cqlsh.py "$@"\n' > /usr/local/bin/cqlsh && \
+    chmod +x /usr/local/bin/cqlsh
+
+# Install RabbitMQ management tool
+RUN wget -O /usr/local/bin/rabbitmqadmin https://raw.githubusercontent.com/rabbitmq/rabbitmq-server/main/deps/rabbitmq_management/bin/rabbitmqadmin && \
+    chmod +x /usr/local/bin/rabbitmqadmin
+
+# Install MinIO client for the target architecture
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        wget https://dl.min.io/client/mc/release/linux-arm64/mc -O /usr/local/bin/mc; \
+    else \
+        wget https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc; \
+    fi && \
+    chmod +x /usr/local/bin/mc
+
+# Create non-root user
+RUN adduser --disabled-password --gecos "" --uid 65532 nonroot
+
+# Switch to non-root user
+USER nonroot
+
+# Set environment variables for convenience
+ENV HOME=/home/nonroot \
+    SHELL=/bin/bash \
+    TERM=xterm-256color
+
+# Set working directory
+WORKDIR /home/nonroot
+
+# Default command
+CMD ["bash", "-c", "echo 'Wire Utility Container Ready!' && echo 'Available tools: mc, cqlsh, psql, redis-cli, rabbitmqadmin' && echo 'Network tools: curl, wget, nc, nmap, tcpdump, dig' && echo 'Text tools: jq, vim, nano, less, tree' && bash"]
