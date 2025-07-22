@@ -61,6 +61,10 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     fi && \
     chmod +x /usr/local/bin/mc
 
+# Copy Elasticsearch debug script
+COPY scripts/es-debug.sh /usr/local/bin/es-debug.sh
+RUN chmod +x /usr/local/bin/es-debug.sh
+
 # Create non-root user
 RUN adduser --disabled-password --gecos "" --uid 65532 nonroot
 
