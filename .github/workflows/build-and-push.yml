@@ -12,7 +12,7 @@ on:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: wire-utility-tool
+  IMAGE_NAME: sukisuk/wire-utility-tool
 
 jobs:
   build-and-push:
