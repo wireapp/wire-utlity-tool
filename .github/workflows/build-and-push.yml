@@ -60,7 +60,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Test image
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
         run: |
           docker run --rm ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest bash -c "
             echo 'Testing tools installation...' &&

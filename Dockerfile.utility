@@ -37,6 +37,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm get-pip.py \
  && rm -rf /var/lib/apt/lists/*
 
+ RUN pip3 install cassandra-driver
+ RUN pip3 install requests
 # Download and install Cassandra 3.11 cqlsh (compatible version)
 RUN mkdir -p /opt/cassandra && \
     cd /opt/cassandra && \
@@ -61,9 +63,13 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     fi && \
     chmod +x /usr/local/bin/mc
 
+# Copy entrypoint script
+COPY scripts/entrypoint.py /usr/local/bin/entrypoint.py
+RUN chmod +x /usr/local/bin/entrypoint.py
+
 # Copy Elasticsearch debug script
-COPY scripts/es-debug.sh /usr/local/bin/es-debug.sh
-RUN chmod +x /usr/local/bin/es-debug.sh
+COPY scripts/es-debug.py /usr/local/bin/es-debug.py
+RUN chmod +x /usr/local/bin/es-debug.py
 
 # Create non-root user
 RUN adduser --disabled-password --gecos "" --uid 65532 nonroot
@@ -79,5 +85,5 @@ ENV HOME=/home/nonroot \
 # Set working directory
 WORKDIR /home/nonroot
 
-# Default command
-CMD ["bash", "-c", "echo 'Wire Utility Container Ready!' && echo 'Available tools: mc, cqlsh, psql, redis-cli, rabbitmqadmin' && echo 'Network tools: curl, wget, nc, nmap, tcpdump, dig' && echo 'Text tools: jq, vim, nano, less, tree' && bash"]
+# Use Python entrypoint
+ENTRYPOINT ["python3", "-u", "/usr/local/bin/entrypoint.py"]
