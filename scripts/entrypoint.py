@@ -34,6 +34,7 @@ RABBITMQ_PASSWORD = os.getenv('RABBITMQ_PASSWORD', 'guest')
 ES_SERVICE_NAME = os.getenv('ES_SERVICE_NAME', 'elasticsearch-external')
 ES_PORT = os.getenv('ES_PORT', '9200')
 
+ENABLE_PROBE_THREAD = os.getenv('ENABLE_PROBE_THREAD', 'false').lower() == 'true'
 
 def run_command(command, capture_output=True, check=False):
     """Run shell command"""
@@ -307,7 +308,8 @@ def main():
     logger.info("Starting Wire utility debug pod...")
 
     # Start periodic status checks
-    status(interval=30)
+    if ENABLE_PROBE_THREAD:
+        status(interval=60)
 
     # Check services
     minio_status, cassandra_status, rabbitmq_status, es_status = check_all_services()
