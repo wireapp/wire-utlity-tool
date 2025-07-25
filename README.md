@@ -46,7 +46,7 @@ make build-multi
 
 ```bash
 # Interactive shell
-docker run -it --rm sukisuk/wire-utility-tool
+docker run -it --rm quay.io/wire/wire-utility-tool:tag
 ```
 
 ### Deploy with Helm (Kubernetes)
