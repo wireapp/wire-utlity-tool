@@ -181,6 +181,7 @@ echo ""
 echo "=== Quick Commands ==="
 echo "status                    # Show this status"
 echo "mc ls wire-minio          # List MinIO buckets"
+echo "mc admin info wire-minio  # Show MinIO server info"
 echo "cqlsh                     # Connect to Cassandra"
 echo "rabbitmqadmin list queues # List RabbitMQ queues"
 echo "es-debug.py usages        # List available commands to run with es-debug.py (e.g es-debug.py health) to debug Elasticsearch"
@@ -262,6 +263,59 @@ def check_cassandra_health(host, port, username=None, password=None):
         logger.error(f"Cassandra ({host}:{port}) health check failed: {e}")
         return False
 
+def check_rabbitmq_service_health(url, username=None, password=None):
+    """Check RabbitMQ HTTP service health with Basic Auth"""
+    try:
+        curl_cmd = [
+            "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", url
+        ]
+        if username and password:
+            curl_cmd.extend(["-u", f"{username}:{password}"])
+        response = subprocess.run(
+            curl_cmd,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        status_code = response.stdout.strip()
+        if status_code.startswith("2"):
+            logger.info(f"RabbitMQ HTTP service {url} is reachable (status code: {status_code})")
+            return True
+        else:
+            logger.error(f"RabbitMQ HTTP service {url} returned status code {status_code}")
+            return False
+    except Exception as e:
+        logger.error(f"Failed to reach RabbitMQ HTTP service {url}: {e}")
+        return False
+
+def check_rabbitmq_running_nodes(url, username=None, password=None):
+    """Get the number of running RabbitMQ nodes via management API and log node details"""
+    try:
+        curl_cmd = [
+            "curl", "-s", url
+        ]
+        if username and password:
+            curl_cmd.extend(["-u", f"{username}:{password}"])
+        response = subprocess.run(
+            curl_cmd,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        import json
+        nodes_info = json.loads(response.stdout)
+        node_statuses = [
+            {"name": node.get("name"), "running": node.get("running", False)}
+            for node in nodes_info
+        ]
+        running_nodes = [node for node in node_statuses if node["running"]]
+        logger.info(f"RabbitMQ nodes: {node_statuses}")
+        logger.info(f"RabbitMQ running nodes: {len(running_nodes)}")
+        return node_statuses
+    except Exception as e:
+        logger.error(f"Failed to get RabbitMQ running nodes: {e}")
+        return []
+
 def status(interval=30):
     """Periodically probe all endpoints and log their status."""
     def probe():
@@ -283,8 +337,18 @@ def status(interval=30):
             rabbitmq_port = int(RABBITMQ_SERVICE_PORT)
             rabbitmq_mgmt_port = int(RABBITMQ_MGMT_PORT)
             rabbitmq_health_url = f"http://{rabbitmq_host}:{rabbitmq_mgmt_port}/api/overview" if rabbitmq_host and rabbitmq_mgmt_port else None
+            rabbitmq_nodes_url = f"http://{rabbitmq_host}:{rabbitmq_mgmt_port}/api/nodes"
             if rabbitmq_health_url:
-                check_service_health(rabbitmq_health_url)
+                check_rabbitmq_service_health(
+                    rabbitmq_health_url,
+                    username=RABBITMQ_USERNAME,
+                    password=RABBITMQ_PASSWORD
+                )
+                check_rabbitmq_running_nodes(
+                    rabbitmq_nodes_url,
+                    username=RABBITMQ_USERNAME,
+                    password=RABBITMQ_PASSWORD
+                )    
             else:
                 check_service(rabbitmq_host, rabbitmq_port, "RabbitMQ")
 
