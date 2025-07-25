@@ -61,7 +61,7 @@ jobs:
       - name: Test image
         if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
         run: |
-          docker run --rm --platform linux/amd64 --entrypoint bash ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest bash -c "
+          docker run --rm --platform linux/amd64 --entrypoint /bin/bash ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest -c "
             echo 'Testing tools installation...' &&
             python3 --version &&
             python2 --version &&
