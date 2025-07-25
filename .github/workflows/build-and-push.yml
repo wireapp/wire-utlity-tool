@@ -68,7 +68,7 @@ jobs:
             mc --version &&
             psql --version &&
             redis-cli --version &&
-            csqlsh --version &&
+            cqlsh --version &&
             rabbitmqadmin --version &&
             echo 'All tools working correctly!'
           "
