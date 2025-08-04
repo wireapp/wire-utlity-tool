@@ -50,7 +50,7 @@ RUN mkdir -p /opt/cassandra && \
 RUN printf '#!/bin/bash\nexport PYTHONPATH="/opt/cassandra/apache-cassandra-3.11.16/pylib:$PYTHONPATH"\nexec python2 /opt/cassandra/apache-cassandra-3.11.16/bin/cqlsh.py "$@"\n' > /usr/local/bin/cqlsh && \
     chmod +x /usr/local/bin/cqlsh
 
-# Install RabbitMQ management tool
+# Install RabbitMQ management tool(legacy version, can not use latest rabbitmqadmin-ng due to Python 2 requirement)
 RUN wget -O /usr/local/bin/rabbitmqadmin https://raw.githubusercontent.com/rabbitmq/rabbitmq-server/main/deps/rabbitmq_management/bin/rabbitmqadmin && \
     chmod +x /usr/local/bin/rabbitmqadmin
 

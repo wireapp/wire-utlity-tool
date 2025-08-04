@@ -28,7 +28,7 @@ A comprehensive Docker image containing essential debugging and utility tools fo
 
 ## Usage
 
-### Build the Image
+### Build the Image Locally to test
 
 ```bash
 # Build for current platform
@@ -41,17 +41,6 @@ make build-arm64
 # Build for multiple platforms
 make build-multi
 ```
-
-### Run the Container
-
-```bash
-# Interactive shell
-docker run -it --rm quay.io/wire/wire-utility-tool:tag
-```
-
-### Deploy with Helm (Kubernetes)
-
-This image is designed to work with the [Wire Utility Helm Chart](https://github.com/wireapp/helm-charts/tree/add-utility-helm/charts/wire-utility) for Kubernetes deployments:
 
 
 ## Available Make Targets
@@ -67,6 +56,18 @@ make push-multi     # Build and push multi-platform image
 make test           # Test the image locally
 make clean          # Clean local images
 ```
+
+### Run the Container with the upstream image from quay.io
+
+```bash
+# Interactive shell
+docker run -it --rm quay.io/wire/wire-utility-tool:tag
+```
+
+### Deploy with Helm (Kubernetes)
+
+This image is designed to work with the [Wire Utility Helm Chart](https://github.com/wireapp/helm-charts/tree/add-utility-helm/charts/wire-utility) for Kubernetes deployments:
+
 
 ## Architecture Support
 
