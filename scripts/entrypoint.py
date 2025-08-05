@@ -188,7 +188,7 @@ echo "mc ls wire-minio          # List MinIO buckets"
 echo "mc admin info wire-minio  # Show MinIO server info"
 echo "cqlsh                     # Connect to Cassandra"
 echo "rabbitmqadmin list queues # List RabbitMQ queues"
-echo "psql                       # Connect to PostgreSQL"
+echo "psql                      # Connect to PostgreSQL"
 echo "es-debug.py usages        # List available commands to run with es-debug.py (e.g es-debug.py health) to debug Elasticsearch"
 echo ""
 '''
