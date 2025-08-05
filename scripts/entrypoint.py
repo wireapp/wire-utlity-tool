@@ -33,6 +33,10 @@ RABBITMQ_PASSWORD = os.getenv('RABBITMQ_PASSWORD', 'guest')
 
 ES_SERVICE_NAME = os.getenv('ES_SERVICE_NAME', 'elasticsearch-external')
 ES_PORT = os.getenv('ES_PORT', '9200')
+PGHOST = os.getenv('PGHOST', 'postgresql')
+PGPORT = int(os.getenv('PGPORT', '5432'))
+PGUSER = os.getenv('PGUSER', 'wire-server')
+PGDATABASE = os.getenv('PGDATABASE', 'wire-server')
 
 ENABLE_PROBE_THREAD = os.getenv('ENABLE_PROBE_THREAD', 'false').lower() == 'true'
 
@@ -176,7 +180,7 @@ timeout 2 nc -z $MINIO_HOST $MINIO_PORT >/dev/null 2>&1 && echo "✅ MinIO      
 timeout 2 nc -z ${CASSANDRA_SERVICE_NAME} ${CASSANDRA_SERVICE_PORT} >/dev/null 2>&1 && echo "✅ Cassandra    ${CASSANDRA_SERVICE_NAME}:${CASSANDRA_SERVICE_PORT}" || echo "❌ Cassandra    ${CASSANDRA_SERVICE_NAME}:${CASSANDRA_SERVICE_PORT}"
 timeout 2 nc -z ${RABBITMQ_SERVICE_NAME} ${RABBITMQ_SERVICE_PORT} >/dev/null 2>&1 && echo "✅ RabbitMQ     ${RABBITMQ_SERVICE_NAME}:${RABBITMQ_SERVICE_PORT}" || echo "❌ RabbitMQ     ${RABBITMQ_SERVICE_NAME}:${RABBITMQ_SERVICE_PORT}"
 timeout 2 nc -z ${ES_SERVICE_NAME} ${ES_PORT} >/dev/null 2>&1 && echo "✅ Elasticsearch ${ES_SERVICE_NAME}:${ES_PORT}" || echo "❌ Elasticsearch ${ES_SERVICE_NAME}:${ES_PORT}"
-
+timeout 2 nc -z ${PGHOST} ${PGPORT} >/dev/null 2>&1 && echo "✅ PostgreSQL   ${PGHOST}:${PGPORT}" || echo "❌ PostgreSQL   ${PGHOST}:${PGPORT}"
 echo ""
 echo "=== Quick Commands ==="
 echo "status                    # Show this status"
@@ -184,6 +188,7 @@ echo "mc ls wire-minio          # List MinIO buckets"
 echo "mc admin info wire-minio  # Show MinIO server info"
 echo "cqlsh                     # Connect to Cassandra"
 echo "rabbitmqadmin list queues # List RabbitMQ queues"
+echo "psql                       # Connect to PostgreSQL"
 echo "es-debug.py usages        # List available commands to run with es-debug.py (e.g es-debug.py health) to debug Elasticsearch"
 echo ""
 '''
@@ -240,7 +245,12 @@ def check_all_services():
     es_port = int(ES_PORT)
     es_status = check_service(es_host, es_port, "Elasticsearch")
 
-    return minio_status, cassandra_status, rabbitmq_status, es_status
+    # PostgreSQL
+    pg_host = PGHOST
+    pg_port = int(PGPORT)
+    pg_status = check_service(pg_host, pg_port, "PostgreSQL")
+
+    return minio_status, cassandra_status, rabbitmq_status, es_status, pg_status
 
 def check_cassandra_health(host, port, username=None, password=None):
     """Check Cassandra health using cassandra-driver with execution profiles."""
@@ -316,7 +326,21 @@ def check_rabbitmq_running_nodes(url, username=None, password=None):
         logger.error(f"Failed to get RabbitMQ running nodes: {e}")
         return []
 
-def status(interval=30):
+def check_postgresql_connection(host, port, username, database):
+    """Test PostgreSQL connection"""
+    try:
+        cmd = f"psql -h {host} -p {port} -U {username} -d {database} -c 'SELECT version();' --no-password"
+        success, stdout, stderr = run_command(cmd, capture_output=True)
+        if success:
+            logger.info(f"PostgreSQL connection successful: {stdout.strip()}")
+        else:
+            logger.error(f"PostgreSQL connection failed: {stderr}") 
+        return success
+    except Exception as e:
+        logger.error(f"PostgreSQL connection test failed: {e}")
+        return False
+
+def status(interval=120):
     """Periodically probe all endpoints and log their status."""
     def probe():
         while True:
@@ -338,29 +362,31 @@ def status(interval=30):
             rabbitmq_mgmt_port = int(RABBITMQ_MGMT_PORT)
             rabbitmq_health_url = f"http://{rabbitmq_host}:{rabbitmq_mgmt_port}/api/overview" if rabbitmq_host and rabbitmq_mgmt_port else None
             rabbitmq_nodes_url = f"http://{rabbitmq_host}:{rabbitmq_mgmt_port}/api/nodes"
-            if rabbitmq_health_url:
-                check_rabbitmq_service_health(
-                    rabbitmq_health_url,
-                    username=RABBITMQ_USERNAME,
-                    password=RABBITMQ_PASSWORD
-                )
-                check_rabbitmq_running_nodes(
-                    rabbitmq_nodes_url,
-                    username=RABBITMQ_USERNAME,
-                    password=RABBITMQ_PASSWORD
-                )    
-            else:
-                check_service(rabbitmq_host, rabbitmq_port, "RabbitMQ")
+
+            check_rabbitmq_service_health(
+                rabbitmq_health_url,
+                username=RABBITMQ_USERNAME,
+                password=RABBITMQ_PASSWORD
+            )
+            check_rabbitmq_running_nodes(
+                rabbitmq_nodes_url,
+                username=RABBITMQ_USERNAME,
+                password=RABBITMQ_PASSWORD
+            )
 
             # Elasticsearch HTTP health check (if env set), else TCP
             es_host = ES_SERVICE_NAME
             es_port = int(ES_PORT)
             es_health_url = f"http://{es_host}:{es_port}/_cluster/health" if es_host and es_port else None
-            if es_health_url:
-                check_service_health(es_health_url)
-            else:
-                check_service(es_host, int(es_port), "Elasticsearch")
 
+            check_service_health(es_health_url)
+
+            check_postgresql_connection(
+                host=PGHOST,
+                port=PGPORT,
+                username=PGUSER,
+                database=PGDATABASE
+            )
             time.sleep(interval)
 
     # Run the probe in a background thread so it doesn't block the main loop
@@ -373,10 +399,10 @@ def main():
 
     # Start periodic status checks
     if ENABLE_PROBE_THREAD:
-        status(interval=60)
+        status(interval=300)
 
     # Check services
-    minio_status, cassandra_status, rabbitmq_status, es_status = check_all_services()
+    minio_status, cassandra_status, rabbitmq_status, es_status, pg_status = check_all_services()
 
     logger.info("Configuring Client Tools")
 
