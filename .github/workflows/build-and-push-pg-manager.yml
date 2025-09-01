@@ -1,28 +1,26 @@
-name: Build and Push Wire Utility Tool
+name: Build and Push PostgreSQL Endpoint Manager
 
 on:
   push:
     branches:
       - main
     tags:
-      - 'v*'      # Keep existing tag pattern for utility tool
+      - 'pg-v*'    # Different tag pattern for pg-manager
     paths:
-      - 'Dockerfile.utility'
-      - 'scripts/entrypoint.py'
-      - 'scripts/es-debug.py'
-      - '.github/workflows/build-and-push.yml'
+      - 'Dockerfile.postgres-endpoint-manager'
+      - 'scripts/postgres-endpoint-manager.py'
+      - '.github/workflows/build-and-push-pg-manager.yml'
   pull_request:
     branches:
       - main
     paths:
-      - 'Dockerfile.utility'
-      - 'scripts/entrypoint.py'
-      - 'scripts/es-debug.py'
-      - '.github/workflows/build-and-push.yml'
+      - 'Dockerfile.postgres-endpoint-manager'
+      - 'scripts/postgres-endpoint-manager.py'
+      - '.github/workflows/build-and-push-pg-manager.yml'
 
 env:
   REGISTRY: quay.io
-  IMAGE_NAME: wire/wire-utility-tool
+  IMAGE_NAME: wire/postgres-endpoint-manager
 
 jobs:
   build-and-push:
@@ -60,25 +58,25 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile.utility
+          file: ./Dockerfile.postgres-endpoint-manager
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=pg-manager
+          cache-to: type=gha,mode=max,scope=pg-manager
 
       - name: Test image
         if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
         run: |
           docker run --rm --platform linux/amd64 --entrypoint /bin/bash ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest -c "
-            echo 'Testing tools installation...' &&
+            echo 'Testing PostgreSQL endpoint manager...' &&
             python3 --version &&
-            python2 --version &&
-            mc --version &&
             psql --version &&
-            redis-cli --version &&
-            cqlsh --version &&
-            rabbitmqadmin --version &&
-            echo 'All tools working correctly!'
+            which curl &&
+            which jq &&
+            echo 'PostgreSQL endpoint manager ready!'
           "
+
+          echo 'Testing functionality...'
+          docker run --rm --platform linux/amd64 ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest --test

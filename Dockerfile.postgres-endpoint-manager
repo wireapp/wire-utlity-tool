@@ -1,0 +1,24 @@
+FROM alpine:latest
+
+# Install dependencies
+RUN apk update && apk add --no-cache \
+    python3 \
+    py3-pip \
+    curl \
+    postgresql-client \
+    jq \
+    bash \
+    && rm -rf /var/cache/apk/*
+
+# Create non-root user
+RUN adduser -D -u 1000 endpoint-manager
+
+# Copy the entrypoint script
+COPY scripts/postgres-endpoint-manager.py /usr/local/bin/postgres-endpoint-manager.py
+RUN chmod +x /usr/local/bin/postgres-endpoint-manager.py
+
+# Switch to non-root user
+USER 1000
+
+# Set entrypoint
+ENTRYPOINT ["python3", "/usr/local/bin/postgres-endpoint-manager.py"]
