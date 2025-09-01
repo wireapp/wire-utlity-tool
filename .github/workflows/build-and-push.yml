@@ -1,14 +1,24 @@
-name: Build and Push Multi-Platform Image
+name: Build and Push Wire Utility Tool
 
 on:
   push:
     branches:
       - main
     tags:
-      - 'v*'
+      - 'v*'      # Keep existing tag pattern for utility tool
+    paths:
+      - 'Dockerfile.utility'
+      - 'scripts/entrypoint.py'
+      - 'scripts/es-debug.py'
+      - '.github/workflows/build-and-push.yml'
   pull_request:
     branches:
       - main
+    paths:
+      - 'Dockerfile.utility'
+      - 'scripts/entrypoint.py'
+      - 'scripts/es-debug.py'
+      - '.github/workflows/build-and-push.yml'
 
 env:
   REGISTRY: quay.io
@@ -17,6 +27,8 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    # Skip if commit message contains [skip utility]
+    if: "!contains(github.event.head_commit.message, '[skip utility]')"
     permissions:
       contents: read
       packages: write

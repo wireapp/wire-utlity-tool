@@ -1,75 +1,164 @@
 # Variables
-IMAGE_NAME ?= sukisuk/wire-utility-tool
+REGISTRY ?= sukisuk
+UTILITY_IMAGE ?= $(REGISTRY)/wire-utility-tool
+PG_MANAGER_IMAGE ?= $(REGISTRY)/postgres-endpoint-manager
 TAG ?= latest
-DOCKERFILE ?= Dockerfile.utility
 
 # Platform targets
 PLATFORMS = linux/amd64,linux/arm64
 
-.PHONY: help build build-amd64 build-arm64 build-multi push push-multi clean
+.PHONY: help build-utility build-pg-manager build-all push-utility push-pg-manager push-all test-utility test-pg-manager clean setup-buildx
 
 # Default target
 help:
 	@echo "Available targets:"
-	@echo "  build-amd64    - Build for AMD64 platform"
-	@echo "  build-arm64    - Build for ARM64 platform"
-	@echo "  build-multi    - Build for multiple platforms (amd64,arm64)"
-	@echo "  push           - Push image to registry"
-	@echo "  push-multi     - Build and push multi-platform image"
-	@echo "  clean          - Clean local images"
+	@echo ""
+	@echo "Wire Utility Tool:"
+	@echo "  build-utility       - Build wire-utility-tool image"
+	@echo "  build-utility-multi - Build wire-utility-tool for multiple platforms"
+	@echo "  push-utility        - Push wire-utility-tool image"
+	@echo "  test-utility        - Test wire-utility-tool image"
+	@echo ""
+	@echo "PostgreSQL Endpoint Manager:"
+	@echo "  build-pg-manager       - Build postgres-endpoint-manager image"
+	@echo "  build-pg-manager-multi - Build postgres-endpoint-manager for multiple platforms"
+	@echo "  push-pg-manager        - Push postgres-endpoint-manager image"
+	@echo "  test-pg-manager        - Test postgres-endpoint-manager image"
+	@echo ""
+	@echo "Combined:"
+	@echo "  build-all     - Build both images"
+	@echo "  push-all      - Push both images"
+	@echo "  test-all      - Test both images"
+	@echo "  clean         - Clean local images"
 	@echo ""
 	@echo "Variables:"
-	@echo "  IMAGE_NAME     - Image name (default: $(IMAGE_NAME))"
-	@echo "  TAG            - Image tag (default: $(TAG))"
-	@echo "  DOCKERFILE     - Dockerfile to use (default: $(DOCKERFILE))"
+	@echo "  REGISTRY      - Registry namespace (default: $(REGISTRY))"
+	@echo "  TAG           - Image tag (default: $(TAG))"
 
-# Build for AMD64 only
-build-amd64:
-	docker build --platform linux/amd64 -f $(DOCKERFILE) -t $(IMAGE_NAME):$(TAG) .
+# ============================================================================
+# Wire Utility Tool Targets
+# ============================================================================
 
-# Build for ARM64 only
-build-arm64:
-	docker build --platform linux/arm64 -f $(DOCKERFILE) -t $(IMAGE_NAME):$(TAG) .
+# Build wire-utility-tool for current platform
+build-utility:
+	docker build -f Dockerfile.utility -t $(UTILITY_IMAGE):$(TAG) .
 
-# Build for current platform (default)
-build:
-	docker build -f $(DOCKERFILE) -t $(IMAGE_NAME):$(TAG) .
+# Build wire-utility-tool for multiple platforms
+build-utility-multi:
+	docker buildx build --platform $(PLATFORMS) -f Dockerfile.utility -t $(UTILITY_IMAGE):$(TAG) .
 
-# Build for multiple platforms using buildx
-build-multi:
-	docker buildx build --platform $(PLATFORMS) -f $(DOCKERFILE) -t $(IMAGE_NAME):$(TAG) .
+# Push wire-utility-tool image
+push-utility: build-utility
+	docker push $(UTILITY_IMAGE):$(TAG)
 
-# Push single platform image
-push: build
-	docker push $(IMAGE_NAME):$(TAG)
+# Push wire-utility-tool multi-platform
+push-utility-multi:
+	docker buildx build --platform $(PLATFORMS) -f Dockerfile.utility -t $(UTILITY_IMAGE):$(TAG) --push .
 
-# Build and push multi-platform image
-push-multi:
-	docker buildx build --platform $(PLATFORMS) -f $(DOCKERFILE) -t $(IMAGE_NAME):$(TAG) --push .
+# Test wire-utility-tool image
+test-utility:
+	@echo "Testing wire-utility-tool image..."
+	docker run --rm $(UTILITY_IMAGE):$(TAG) bash -c "echo 'Testing tools...' && python3 --version && python2 --version && psql --version && cqlsh --version && mc --version"
 
-# Test the image locally
-test:
-	docker run -it --rm $(IMAGE_NAME):$(TAG) bash -c "echo 'Testing tools...' && python3 --version && rabbitmqadmin --version && mc --version && cqlsh --version && psql --version"
+# ============================================================================
+# PostgreSQL Endpoint Manager Targets
+# ============================================================================
+
+# Build postgres-endpoint-manager for current platform
+build-pg-manager:
+	docker build -f Dockerfile.postgres-endpoint-manager -t $(PG_MANAGER_IMAGE):$(TAG) .
+
+# Build postgres-endpoint-manager for multiple platforms
+build-pg-manager-multi:
+	docker buildx build --platform $(PLATFORMS) -f Dockerfile.postgres-endpoint-manager -t $(PG_MANAGER_IMAGE):$(TAG) .
+
+# Push postgres-endpoint-manager image
+push-pg-manager: build-pg-manager
+	docker push $(PG_MANAGER_IMAGE):$(TAG)
+
+# Push postgres-endpoint-manager multi-platform
+push-pg-manager-multi:
+	docker buildx build --platform $(PLATFORMS) -f Dockerfile.postgres-endpoint-manager -t $(PG_MANAGER_IMAGE):$(TAG) --push .
+
+# Test postgres-endpoint-manager image
+test-pg-manager:
+	@echo "Testing postgres-endpoint-manager image..."
+	docker run --rm --entrypoint /bin/bash $(PG_MANAGER_IMAGE):$(TAG) -c "python3 --version && psql --version && curl --version && jq --version"
+	@echo "Testing postgres-endpoint-manager functionality..."
+	docker run --rm $(PG_MANAGER_IMAGE):$(TAG) --test
+
+# Test postgres-endpoint-manager with custom nodes
+test-pg-manager-custom:
+	@echo "Testing postgres-endpoint-manager with custom node configuration..."
+	docker run --rm \
+		-e PG_NODES="10.0.0.1:primary,10.0.0.2:standby1,10.0.0.3:standby2" \
+		-e RW_SERVICE="my-postgres-rw" \
+		-e RO_SERVICE="my-postgres-ro" \
+		-e PGUSER="testuser" \
+		-e PGDATABASE="testdb" \
+		$(PG_MANAGER_IMAGE):$(TAG) --test
+
+# ============================================================================
+# Combined Targets
+# ============================================================================
+
+# Build both images
+build-all: build-utility build-pg-manager
+
+# Build both images for multiple platforms
+build-all-multi: build-utility-multi build-pg-manager-multi
+
+# Push both images
+push-all: push-utility push-pg-manager
+
+# Push both images multi-platform
+push-all-multi: push-utility-multi push-pg-manager-multi
+
+# Test both images
+test-all: test-utility test-pg-manager
+
+# ============================================================================
+# Utility Targets
+# ============================================================================
 
 # Clean local images
 clean:
-	docker rmi $(IMAGE_NAME):$(TAG) || true
+	docker rmi $(UTILITY_IMAGE):$(TAG) || true
+	docker rmi $(PG_MANAGER_IMAGE):$(TAG) || true
+	@echo "Cleaned local images"
 
 # Setup buildx for multi-platform builds
 setup-buildx:
 	docker buildx create --use --name multiarch || true
 	docker buildx inspect --bootstrap
+	@echo "Buildx setup complete"
 
 # Remove buildx builder
 cleanup-buildx:
 	docker buildx rm multiarch || true
 
-# Build with custom tag
-build-tag:
-	@read -p "Enter tag: " tag; \
-	make build TAG=$$tag
+# Show current images
+show-images:
+	@echo "Current images:"
+	@docker images | grep -E "($(REGISTRY)|REPOSITORY)" || echo "No matching images found"
 
-# Push with custom tag
-push-tag:
-	@read -p "Enter tag: " tag; \
-	make push TAG=$$tag
+# Login to Docker Hub (interactive)
+login:
+	docker login
+
+# Quick development workflow
+dev-utility: build-utility test-utility
+	@echo "Development build complete for wire-utility-tool"
+
+dev-pg-manager: build-pg-manager test-pg-manager
+	@echo "Development build complete for postgres-endpoint-manager"
+
+# Quick release workflow (build + test + push)
+release-utility: build-utility test-utility push-utility
+	@echo "Released $(UTILITY_IMAGE):$(TAG)"
+
+release-pg-manager: build-pg-manager test-pg-manager push-pg-manager
+	@echo "Released $(PG_MANAGER_IMAGE):$(TAG)"
+
+release-all: build-all test-all push-all
+	@echo "Released both images with tag $(TAG)"
