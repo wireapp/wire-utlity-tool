@@ -5,7 +5,7 @@ on:
     branches:
       - main
     tags:
-      - 'pg-v*'    # Different tag pattern for pg-manager
+      - 'pg-v*'
     paths:
       - 'Dockerfile.postgres-endpoint-manager'
       - 'scripts/postgres-endpoint-manager.py'
@@ -54,22 +54,27 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push Docker image
+      - name: Build Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile.postgres-endpoint-manager
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: false  # Build locally first
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=pg-manager
           cache-to: type=gha,mode=max,scope=pg-manager
+          load: true  # Load image locally for testing
 
       - name: Test image
-        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
         run: |
-          docker run --rm --platform linux/amd64 --entrypoint /bin/bash ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest -c "
+          # Get the first tag from metadata output
+          TEST_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+          echo "Testing image: $TEST_TAG"
+
+          # Test basic tools
+          docker run --rm --platform linux/amd64 --entrypoint /bin/bash $TEST_TAG -c "
             echo 'Testing PostgreSQL endpoint manager...' &&
             python3 --version &&
             psql --version &&
@@ -78,5 +83,30 @@ jobs:
             echo 'PostgreSQL endpoint manager ready!'
           "
 
+          # Test functionality
           echo 'Testing functionality...'
-          docker run --rm --platform linux/amd64 ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest --test
+          docker run --rm --platform linux/amd64 $TEST_TAG --test
+
+      - name: Push Docker image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.postgres-endpoint-manager
+          platforms: linux/amd64,linux/arm64
+          push: true  # Push after successful tests
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=pg-manager
+
+      - name: Image summary
+        run: |
+          echo "✅ Built and tested PostgreSQL Endpoint Manager:"
+          echo "${{ steps.meta.outputs.tags }}" | while read tag; do
+            echo "  📦 $tag"
+          done
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "🚀 Images pushed to registry"
+          else
+            echo "🧪 PR build - images not pushed"
+          fi
