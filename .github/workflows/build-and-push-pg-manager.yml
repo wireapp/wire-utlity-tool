@@ -54,27 +54,23 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build Docker image
+      - name: Build test image (single platform)
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile.postgres-endpoint-manager
-          platforms: linux/amd64,linux/arm64
-          push: false  # Build locally first
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=pg-manager
-          cache-to: type=gha,mode=max,scope=pg-manager
-          load: true  # Load image locally for testing
+          platforms: linux/amd64  # Single platform for testing
+          push: false
+          load: true  # Load locally for testing
+          tags: test-image:latest
+          cache-from: type=gha,scope=pg-manager-test
 
       - name: Test image
         run: |
-          # Get the first tag from metadata output
-          TEST_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
-          echo "Testing image: $TEST_TAG"
+          echo "Testing image: test-image:latest"
 
           # Test basic tools
-          docker run --rm --platform linux/amd64 --entrypoint /bin/bash $TEST_TAG -c "
+          docker run --rm --platform linux/amd64 --entrypoint /bin/bash test-image:latest -c "
             echo 'Testing PostgreSQL endpoint manager...' &&
             python3 --version &&
             psql --version &&
@@ -85,28 +81,45 @@ jobs:
 
           # Test functionality
           echo 'Testing functionality...'
-          docker run --rm --platform linux/amd64 $TEST_TAG --test
+          docker run --rm --platform linux/amd64 test-image:latest --test
 
-      - name: Push Docker image
+      - name: Build and push multi-platform image
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile.postgres-endpoint-manager
-          platforms: linux/amd64,linux/arm64
-          push: true  # Push after successful tests
+          platforms: linux/amd64,linux/arm64  # Multi-platform for production
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=pg-manager
+          cache-to: type=gha,mode=max,scope=pg-manager
+
+      - name: Build multi-platform image (PR - no push)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.postgres-endpoint-manager
+          platforms: linux/amd64,linux/arm64  # Multi-platform build verification
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=pg-manager
+          cache-to: type=gha,mode=max,scope=pg-manager
 
       - name: Image summary
         run: |
           echo "✅ Built and tested PostgreSQL Endpoint Manager:"
-          echo "${{ steps.meta.outputs.tags }}" | while read tag; do
-            echo "  📦 $tag"
-          done
           if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "🚀 Images pushed to registry"
+            echo "${{ steps.meta.outputs.tags }}" | while read tag; do
+              echo "  📦 $tag (pushed)"
+            done
+            echo "🚀 Multi-platform images pushed to registry"
           else
-            echo "🧪 PR build - images not pushed"
+            echo "${{ steps.meta.outputs.tags }}" | while read tag; do
+              echo "  📦 $tag (built, not pushed)"
+            done
+            echo "🧪 PR build - multi-platform images built but not pushed"
           fi
