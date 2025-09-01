@@ -1,148 +1,110 @@
 # Wire Utility Tool
 
-A comprehensive Docker image containing essential debugging and utility tools for working with various backend services and databases.
+A comprehensive Docker toolkit providing essential debugging utilities and automated PostgreSQL cluster management for Wire's backend infrastructure.
 
-## What's Included
-
-### Database Tools
-- **PostgreSQL Client** (`psql`) - Connect to PostgreSQL databases
-- **Redis CLI** (`redis-cli`) - Interact with Redis instances
-- **Cassandra CQL Shell** (`cqlsh`) - Query Cassandra databases (v3.11 compatible)
-
-### Message Queue Tools
-- **RabbitMQ Admin** (`rabbitmqadmin`) - Manage RabbitMQ instances
-
-### Storage Tools
-- **MinIO Client** (`mc`) - Interact with S3-compatible storage
-
-### Search & Analytics
-- **Elasticsearch Debug Script** (`es-debug.sh`) - Debug Elasticsearch clusters
-
-### Network & System Tools
-- **Network**: `curl`, `wget`, `nc`, `nmap`, `tcpdump`, `dig`, `ping`, `traceroute`
-- **Text Processing**: `jq`, `vim`, `nano`, `less`, `tree`
-- **System**: `bash`, `find`, `file`, and other core utilities
-
-### Programming Languages
-- **Python 2** and **Python 3** with pip
-
-## Usage
-
-### Build the Image Locally to test
+## 🚀 Quick Start
 
 ```bash
-# Build for current platform
-make build
-
-# Build for specific platform
-make build-amd64
-make build-arm64
-
-# Build for multiple platforms
-make build-multi
-```
-
-
-## Available Make Targets
-
-```bash
-make help           # Show all available targets
-make build          # Build for current platform
-make build-amd64    # Build for AMD64 platform
-make build-arm64    # Build for ARM64 platform
-make build-multi    # Build for multiple platforms
-make push           # Push single platform image
-make push-multi     # Build and push multi-platform image
-make test           # Test the image locally
-make clean          # Clean local images
-```
-
-### Run the Container with the upstream image from quay.io
-
-```bash
-# Interactive shell
+# Wire Utility Tool (debugging & utilities)
 docker run -it --rm quay.io/wire/wire-utility-tool:latest
 
-# With specific version
-docker run -it --rm quay.io/wire/wire-utility-tool:1.0.0
+# PostgreSQL Endpoint Manager (cluster automation)
+docker run --rm quay.io/wire/wire-utility-tool:pg-manager-latest --test
 ```
 
-### Deploy with Helm (Kubernetes)
+## 📦 What's Included
 
-This image is designed to work with the [Wire Utility Helm Chart](https://github.com/wireapp/helm-charts/tree/add-utility-helm/charts/wire-utility) for Kubernetes deployments:
+### 🔧 Wire Utility Tool
 
-## Versioning and Releases
+A debugging container with comprehensive tooling:
 
-### Adding New Tools and Creating Releases
+**Database Clients**
+- **PostgreSQL** (`psql`) - Connect and query PostgreSQL databases
+- **Redis** (`redis-cli`) - Interact with Redis instances
+- **Cassandra** (`cqlsh`) - Query Cassandra clusters (v3.11 compatible)
 
-When adding new tools or making significant changes to the image:
+**Message Queue & Storage**
+- **RabbitMQ** (`rabbitmqadmin`) - Manage RabbitMQ instances
+- **MinIO Client** (`mc`) - Interact with S3-compatible storage
 
-1. **Update the Dockerfile** with the new tool installation
-2. **Update this README** to document the new tool
-3. **Test the changes locally**:
+**Network & System Tools**
+- **Network**: `curl`, `wget`, `nc`, `nmap`, `tcpdump`, `dig`, `ping`, `traceroute`
+- **Text Processing**: `jq`, `vim`, `nano`, `less`, `tree`
+- **Programming**: Python 2 & 3 with pip
+
+**Search & Analytics**
+- **Elasticsearch Debug** (`es-debug.sh`) - Debug Elasticsearch clusters
+
+### 🗄️ PostgreSQL Endpoint Manager
+
+Automated PostgreSQL cluster management:
+
+- **🔍 Discovers** cluster topology from Kubernetes service annotations
+- **🔬 Verifies** node roles (primary/standby) via live database connections
+- **📡 Updates** Kubernetes endpoints automatically during topology changes
+- **📊 Provides** structured JSON logging for observability
+
+## 🛠️ Usage
+
+### Development
+
+```bash
+# Build and test locally
+make build && make test
+
+# PostgreSQL manager
+make dev-pg-manager && make test-pg-manager
+```
+
+### Production
+
+```bash
+# Interactive debugging session
+docker run -it --rm quay.io/wire/wire-utility-tool:latest
+
+# Test PostgreSQL manager
+docker run --rm quay.io/wire/wire-utility-tool:pg-manager-latest --test
+```
+
+## 🔖 Versioning
+
+### Creating Releases
+
+1. **Make changes and test locally**
+2. **Create version tag**:
    ```bash
-   make build
-   make test
+   # Utility tool releases
+   git tag -a v1.3.0 -m "Add new debugging tools"
+
+   # PostgreSQL manager releases
+   git tag -a pg-v1.1.0 -m "Improve cluster discovery"
+   ```
+3. **Push to trigger automated build**:
+   ```bash
+   git push origin v1.3.0     # → quay.io/wire/wire-utility-tool:v1.3.0
+   git push origin pg-v1.1.0  # → quay.io/wire/wire-utility-tool:pg-manager-v1.1.0
    ```
 
-4. **Commit your changes**:
-   ```bash
-   git add .
-   git commit -m "Add new tool: example-tool"
-   ```
+### Available Tags
 
-5. **Create a version tag** following semantic versioning:
-   ```bash
-   # For new tools/features (minor version)
-   git tag -a v1.1.0 -m "Release version 1.1.0 - Add example-tool"
-   
-   # For bug fixes (patch version)
-   git tag -a v1.0.1 -m "Release version 1.0.1 - Fix tool configuration"
-   
-   # For breaking changes (major version)
-   git tag -a v2.0.0 -m "Release version 2.0.0 - Breaking changes"
-   ```
+| Component | Latest | Versioned |
+|-----------|--------|-----------|
+| **Utility Tool** | `latest` | `v1.2.0`, `1.2` |
+| **PostgreSQL Manager** | `pg-manager-latest` | `pg-manager-v1.0.0` |
 
-6. **Push the tag to trigger automated build**:
-   ```bash
-   git push origin v1.1.0
-   ```
+## 🏗️ Architecture
 
-### Version Tag Results
+- **Multi-platform**: AMD64 & ARM64 support
+- **Security**: Non-root user (UID 65532), minimal attack surface
+- **Base**: Debian Bullseye Slim for stability
 
-When you push a version tag, the CI/CD pipeline automatically builds and pushes:
+## 🤝 Contributing
 
-- `quay.io/wire/wire-utility-tool:v1.1.0` - Exact version
-- `quay.io/wire/wire-utility-tool:1.1` - Major.minor version
-- `quay.io/wire/wire-utility-tool:latest` - Latest stable release
+1. **Add new tools** to Dockerfile
+2. **Update README** with tool documentation
+3. **Test changes** locally
+4. **Submit PR** with version tag
 
-### Semantic Versioning Guidelines
+---
 
-- **Patch** (`v1.0.1`): Bug fixes, security updates, tool configuration changes
-- **Minor** (`v1.1.0`): New tools added, new features, backward-compatible changes
-- **Major** (`v2.0.0`): Breaking changes, tool removals, base image changes
-
-## Architecture Support
-
-This image supports both AMD64 and ARM64 architectures, making it suitable for:
-- Intel/AMD x86_64 systems
-- Apple Silicon (M1/M2) Macs
-- ARM64 servers
-
-## Security
-
-- Runs as non-root user (`nonroot` with UID 65532)
-- Minimal attack surface with only essential tools
-- Based on Debian Bullseye Slim to support legacy versions
-
-## Related Projects
-
-- **[Wire Utility Helm Chart](https://github.com/wireapp/helm-charts/tree/add-utility-helm/charts/wire-utility)** - Kubernetes deployment chart for this utility image
-
-## Contributing
-
-Feel free to submit issues and enhancement requests!
-
-## License
-
-This project is open source and available under standard terms.
+**Repository Purpose**: Provides standardized debugging utilities and automated PostgreSQL cluster management for Wire's infrastructure operations.
