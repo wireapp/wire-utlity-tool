@@ -20,7 +20,8 @@ on:
 
 env:
   REGISTRY: quay.io
-  IMAGE_NAME: wire/postgres-endpoint-manager
+  IMAGE_NAME: wire/wire-utility-tool  # Use existing repo
+  PG_TAG_PREFIX: pg-manager          # Prefix for pg manager tags
 
 jobs:
   build-and-push:
@@ -49,19 +50,19 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=pr,prefix=${{ env.PG_TAG_PREFIX }}-pr-
+            type=semver,pattern={{version}},prefix=${{ env.PG_TAG_PREFIX }}-
+            type=semver,pattern={{major}}.{{minor}},prefix=${{ env.PG_TAG_PREFIX }}-
+            type=raw,value=${{ env.PG_TAG_PREFIX }}-latest,enable={{is_default_branch}}
 
       - name: Build test image (single platform)
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile.postgres-endpoint-manager
-          platforms: linux/amd64  # Single platform for testing
+          platforms: linux/amd64
           push: false
-          load: true  # Load locally for testing
+          load: true
           tags: test-image:latest
           cache-from: type=gha,scope=pg-manager-test
 
@@ -84,12 +85,12 @@ jobs:
           docker run --rm --platform linux/amd64 test-image:latest --test
 
       - name: Build and push multi-platform image
-        # if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile.postgres-endpoint-manager
-          platforms: linux/amd64,linux/arm64  # Multi-platform for production
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -102,7 +103,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile.postgres-endpoint-manager
-          platforms: linux/amd64,linux/arm64  # Multi-platform build verification
+          platforms: linux/amd64,linux/arm64
           push: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
