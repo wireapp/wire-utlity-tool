@@ -221,7 +221,6 @@ class PostgreSQLEndpointManager:
                 content = f.read().strip()
 
                 # Only log successful read for non-sensitive files
-                # Don't log content length for token files to avoid revealing token size
                 if 'token' in filepath:
                     self.log_info("Successfully read service account token")
                 else:
@@ -552,7 +551,6 @@ class PostgreSQLEndpointManager:
                     "action": "requires_bootstrap"
                 })
                 # For first run, we need some way to bootstrap
-                # You could add a fallback mechanism here if needed
                 return 1
 
             self.log_info("Nodes discovered - proceeding with topology verification", {
@@ -624,7 +622,6 @@ class PostgreSQLEndpointManager:
             ):
                 updates += 1
 
-            # Summary
             end_time = datetime.now(timezone.utc)
             duration = (end_time - start_time).total_seconds()
 
