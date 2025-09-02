@@ -9,6 +9,7 @@ on:
     paths:
       - 'Dockerfile.postgres-endpoint-manager'
       - 'scripts/postgres-endpoint-manager.py'
+      - 'scripts/test-postgres-endpoint-manager.py'
       - '.github/workflows/build-and-push-pg-manager.yml'
   pull_request:
     branches:
@@ -16,6 +17,7 @@ on:
     paths:
       - 'Dockerfile.postgres-endpoint-manager'
       - 'scripts/postgres-endpoint-manager.py'
+      - 'scripts/test-postgres-endpoint-manager.py'
       - '.github/workflows/build-and-push-pg-manager.yml'
 
 env:
