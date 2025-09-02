@@ -24,6 +24,8 @@ help:
 	@echo "  build-pg-manager-multi - Build postgres-endpoint-manager for multiple platforms"
 	@echo "  push-pg-manager        - Push postgres-endpoint-manager image"
 	@echo "  test-pg-manager        - Test postgres-endpoint-manager image"
+	@echo "  test-pg-manager-custom - Test with custom node configuration"
+	@echo "  test-pg-manager-interactive - Run interactive test mode"
 	@echo ""
 	@echo "Combined:"
 	@echo "  build-all     - Build both images"
@@ -85,18 +87,33 @@ test-pg-manager:
 	@echo "Testing postgres-endpoint-manager image..."
 	docker run --rm --entrypoint /bin/bash $(PG_MANAGER_IMAGE):$(TAG) -c "python3 --version && psql --version && curl --version && jq --version"
 	@echo "Testing postgres-endpoint-manager functionality..."
-	docker run --rm $(PG_MANAGER_IMAGE):$(TAG) --test
+	docker run --rm \
+		-e PG_NODES="192.168.122.31,192.168.122.32,192.168.122.33" \
+		-v $(PWD)/scripts:/app/scripts \
+		--entrypoint python3 \
+		$(PG_MANAGER_IMAGE):$(TAG) /app/scripts/test-postgres-endpoint-manager.py --comprehensive
 
 # Test postgres-endpoint-manager with custom nodes
 test-pg-manager-custom:
 	@echo "Testing postgres-endpoint-manager with custom node configuration..."
 	docker run --rm \
-		-e PG_NODES="10.0.0.1:primary,10.0.0.2:standby1,10.0.0.3:standby2" \
+		-e PG_NODES="10.0.0.1,10.0.0.2,10.0.0.3" \
 		-e RW_SERVICE="my-postgres-rw" \
 		-e RO_SERVICE="my-postgres-ro" \
 		-e PGUSER="testuser" \
 		-e PGDATABASE="testdb" \
-		$(PG_MANAGER_IMAGE):$(TAG) --test
+		-v $(PWD)/scripts:/app/scripts \
+		--entrypoint python3 \
+		$(PG_MANAGER_IMAGE):$(TAG) /app/scripts/test-postgres-endpoint-manager.py --scenario healthy_cluster
+
+# Test postgres-endpoint-manager interactively
+test-pg-manager-interactive:
+	@echo "Running interactive test mode..."
+	docker run --rm -it \
+		-e PG_NODES="192.168.122.31,192.168.122.32,192.168.122.33" \
+		-v $(PWD)/scripts:/app/scripts \
+		--entrypoint python3 \
+		$(PG_MANAGER_IMAGE):$(TAG) /app/scripts/test-postgres-endpoint-manager.py --interactive
 
 # ============================================================================
 # Combined Targets

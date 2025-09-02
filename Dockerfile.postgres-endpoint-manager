@@ -8,7 +8,14 @@ RUN apk update && apk add --no-cache \
     postgresql-client \
     jq \
     bash \
+    gcc \
+    musl-dev \
+    python3-dev \
     && rm -rf /var/cache/apk/*
+
+# Install Python Kubernetes client for better endpoint management
+# Use --break-system-packages to override Alpine's externally managed environment
+RUN pip3 install --no-cache-dir --break-system-packages kubernetes>=24.2.0
 
 # Create non-root user
 RUN adduser -D -u 1000 endpoint-manager
