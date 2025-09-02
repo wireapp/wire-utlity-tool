@@ -400,9 +400,11 @@ class PostgreSQLEndpointManager:
             "parallel_processing": True
         })
 
+        # Local state for topology discovery
         primary_ip = None
         primary_name = None
         standby_ips = []
+        primary_ips_found = []
 
         # Use ThreadPoolExecutor for parallel node checking
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -419,6 +421,7 @@ class PostgreSQLEndpointManager:
                     status = future.result(timeout=self.connection_timeout + 5)
 
                     if status == 'primary':
+                        primary_ips_found.append(ip)
                         primary_ip = ip
                         primary_name = name
                     elif status == 'standby':
@@ -437,6 +440,14 @@ class PostgreSQLEndpointManager:
             'primary_name': primary_name,
             'standby_ips': sorted(standby_ips)  # Sort for consistency
         }
+
+        # If multiple primaries were detected, treat it as an error and abort updates
+        if len(primary_ips_found) > 1:
+            self.log_error("Multiple primaries detected — aborting updates", {
+                "primary_ips_found": primary_ips_found
+            })
+            topology['primary_ip'] = None
+            topology['primary_name'] = None
 
         self.log_info("Topology verification completed", {
             "primary_ip": primary_ip,
