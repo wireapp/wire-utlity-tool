@@ -84,6 +84,25 @@ class PostgreSQLEndpointManager:
 
         if self.is_k8s_environment:
             self.namespace = self.read_file('/var/run/secrets/kubernetes.io/serviceaccount/namespace')
+
+            # Ensure kubernetes client is available and load in-cluster config once
+            if not KUBERNETES_CLIENT_AVAILABLE:
+                self.log_error("Kubernetes client library not installed", {
+                    "kubernetes_client_available": False
+                })
+                sys.exit(1)
+
+            try:
+                config.load_incluster_config()
+                # Reuse a single API client instance for the lifetime of the process
+                self.k8s_v1 = client.CoreV1Api()
+                self.log_info("Loaded in-cluster Kubernetes config and initialized client")
+            except Exception as e:
+                self.log_error("Failed to load in-cluster Kubernetes config", {
+                    "error": str(e),
+                    "error_type": type(e).__name__
+                })
+                sys.exit(1)
         else:
             self.log_warning("Not running in Kubernetes environment", {
                 "kubernetes_environment": False
@@ -462,48 +481,61 @@ class PostgreSQLEndpointManager:
             return False
 
         try:
-            # Load in-cluster config
-            config.load_incluster_config()
-
-            # Create API client
-            v1 = client.CoreV1Api()
-
-            # Create endpoint addresses
-            addresses = [client.V1EndpointAddress(ip=ip) for ip in target_ips] if target_ips else []
-
-            # Create endpoint subset
-            subset = client.V1EndpointSubset(
-                addresses=addresses,
-                ports=[client.V1EndpointPort(port=5432, protocol="TCP", name="postgresql")]
-            )
-
-            # Create endpoint object with annotations
-            endpoint = client.V1Endpoints(
-                metadata=client.V1ObjectMeta(
-                    name=service_name,
-                    annotations={
+            # Build a plain dict payload to avoid client model incompatibilities across versions
+            # Use the pre-initialized CoreV1Api client (self.k8s_v1)
+            endpoint_body = {
+                "metadata": {
+                    "name": service_name,
+                    "annotations": {
                         "postgres.discovery/last-topology": topology_signature,
                         "postgres.discovery/last-update": datetime.now(timezone.utc).isoformat()
                     }
-                ),
-                subsets=[subset]
-            )
+                },
+                # If there are target IPs, construct subsets with addresses and ports.
+                # Otherwise provide empty subsets to indicate no ready endpoints.
+                "subsets": [
+                    {
+                        "addresses": [{"ip": ip} for ip in target_ips],
+                        "ports": [{"port": 5432, "protocol": "TCP", "name": "postgresql"}]
+                    }
+                ] if target_ips else []
+            }
 
-            # Patch the endpoint (merge patch to update only specified fields)
-            v1.patch_namespaced_endpoints(
-                name=service_name,
-                namespace=self.namespace,
-                body=endpoint
-            )
-
-            self.log_info("Endpoint updated successfully", {
-                "service_name": service_name,
-                "description": description,
-                "target_ips": target_ips,
-                "method": "kubernetes_client",
-                "annotations_updated": True
-            })
-            return True
+            try:
+                self.k8s_v1.patch_namespaced_endpoints(
+                    name=service_name,
+                    namespace=self.namespace,
+                    body=endpoint_body
+                )
+                self.log_info("Endpoint patched successfully", {
+                    "service_name": service_name,
+                    "description": description,
+                    "target_ips": target_ips,
+                    "method": "kubernetes_client",
+                    "annotations_updated": True
+                })
+                return True
+            except client.exceptions.ApiException as e:
+                # If the resource doesn't exist, create it
+                if hasattr(e, 'status') and e.status == 404:
+                    self.log_info("Endpoint not found, creating new endpoint resource", {
+                        "service_name": service_name,
+                        "namespace": self.namespace
+                    })
+                    self.k8s_v1.create_namespaced_endpoints(
+                        namespace=self.namespace,
+                        body=endpoint_body
+                    )
+                    self.log_info("Endpoint created successfully", {
+                        "service_name": service_name,
+                        "description": description,
+                        "target_ips": target_ips,
+                        "method": "kubernetes_client",
+                        "annotations_updated": True
+                    })
+                    return True
+                # Re-raise for outer handler to log
+                raise
 
         except client.exceptions.ApiException as e:
             self.log_error("Kubernetes client endpoint update failed", {
