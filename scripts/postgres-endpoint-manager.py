@@ -625,62 +625,34 @@ class PostgreSQLEndpointManager:
             return False
 
 if __name__ == "__main__":
+    import argparse
+    import subprocess
+    import os
+    import sys
+
     parser = argparse.ArgumentParser(
-        description='PostgreSQL Endpoint Manager - Environment Variable Discovery',
-        epilog="""
-How it works:
-  1. Discovers nodes from PG_NODES environment variable
-  2. Verifies actual status of all configured PostgreSQL nodes
-  3. Updates endpoints only if topology has changed
-
-Environment Variables:
-  PG_NODES             PostgreSQL node IPs (comma-separated)
-  RW_SERVICE           Read-Write service name (default: postgresql-external-rw)
-  RO_SERVICE           Read-Only service name (default: postgresql-external-ro)
-  PGPASSWORD           PostgreSQL password (default: securepassword)
-  PGUSER               PostgreSQL username (default: repmgr)
-  PGDATABASE           PostgreSQL database (default: repmgr)
-  PGCONNECT_TIMEOUT    Connection timeout in seconds (default: 5)
-  MAX_WORKERS          Max parallel workers for node checking (default: 3)
-
-Performance Features:
-  - Parallel node checking for faster topology discovery
-  - Node status caching to reduce redundant checks
-  - Optimized connection timeouts and error handling
-  - Parallel endpoint updates for faster completion
-
-Discovery Method:
-  - Discovers ALL nodes from PG_NODES environment variable
-  - Verifies each node's current role (primary/standby/down)
-  - Always checks ALL configured nodes (fixes shrinking cluster issue)
-  - Updates endpoints only when topology changes
-
-Examples:
-  # Normal operation with environment variables
-  PG_NODES="192.168.122.31,192.168.122.32,192.168.122.33" \\
-  python3 postgres-endpoint-manager.py
-        """,
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        prog="postgres-endpoint-manager.py",
+        description="PostgreSQL Endpoint Manager"
     )
-    parser.add_argument('--version', action='version', version='1.0.0')
-    args = parser.parse_args()
+    parser.add_argument("--version", action="version", version="1.0.0")
+    parser.add_argument("--test", action="store_true", help="Run the test script (test-postgres-endpoint-manager.py)")
+    args, unknown = parser.parse_known_args()
+
+    if args.test:
+        # Run the separated test script and forward exit code
+        test_script = os.path.join(os.path.dirname(__file__), "test-postgres-endpoint-manager.py")
+        if not os.path.exists(test_script):
+            print(f"Test script not found: {test_script}", file=sys.stderr)
+            sys.exit(2)
+        rc = subprocess.call([sys.executable, test_script] + unknown)
+        sys.exit(rc)
 
     try:
         manager = PostgreSQLEndpointManager()
-        success = manager.run()
-        sys.exit(0 if success else 1)
+        rc = manager.run()
+        sys.exit(0 if rc else 1)
     except KeyboardInterrupt:
-        logger.info("Received interrupt signal, shutting down gracefully")
-        sys.exit(130)
+        sys.exit(0)
     except Exception as e:
-        record = logging.LogRecord(
-            name=logger.name, level=logging.ERROR, pathname="", lineno=0,
-            msg="Fatal error during startup", args=(), exc_info=None
-        )
-        record.extra_fields = {
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "phase": "startup"
-        }
-        logger.handle(record)
+        # existing error logging handled inside class; ensure non-zero exit
         sys.exit(1)
