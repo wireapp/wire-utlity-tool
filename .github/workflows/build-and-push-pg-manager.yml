@@ -62,6 +62,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile.postgres-endpoint-manager
+          target: builder
           platforms: linux/amd64
           push: false
           load: true
@@ -82,9 +83,12 @@ jobs:
             echo 'PostgreSQL endpoint manager ready!'
           "
 
-          # Test functionality
+          # Test functionality: mount the repository scripts and invoke the test harness
           echo 'Testing functionality...'
-          docker run --rm --platform linux/amd64 test-image:latest --test
+          docker run --rm --platform linux/amd64 \
+            -v $GITHUB_WORKSPACE/scripts:/app/scripts:ro \
+            --entrypoint python3 \
+            test-image:latest /app/scripts/test-postgres-endpoint-manager.py --comprehensive
 
       - name: Build and push multi-platform image
         if: github.event_name != 'pull_request'
