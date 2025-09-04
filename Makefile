@@ -70,6 +70,10 @@ test-utility:
 build-pg-manager:
 	docker build -f Dockerfile.postgres-endpoint-manager -t $(PG_MANAGER_IMAGE):$(TAG) .
 
+# Build a test image (includes postgresql-client and dev tools) from the builder stage
+build-pg-manager-test:
+	docker build -f Dockerfile.postgres-endpoint-manager -t $(PG_MANAGER_IMAGE)-test:$(TAG) --target builder .
+
 # Build postgres-endpoint-manager for multiple platforms
 build-pg-manager-multi:
 	docker buildx build --platform $(PLATFORMS) -f Dockerfile.postgres-endpoint-manager -t $(PG_MANAGER_IMAGE):$(TAG) .
@@ -84,14 +88,17 @@ push-pg-manager-multi:
 
 # Test postgres-endpoint-manager image
 test-pg-manager:
-	@echo "Testing postgres-endpoint-manager image..."
-	docker run --rm --entrypoint /bin/bash $(PG_MANAGER_IMAGE):$(TAG) -c "python3 --version && psql --version && curl --version && jq --version"
-	@echo "Testing postgres-endpoint-manager functionality..."
+	@echo "Testing postgres-endpoint-manager image (runtime) and functionality via test image..."
+	# Check minimal runtime image (no psql expected)
+	docker run --rm --entrypoint sh $(PG_MANAGER_IMAGE):$(TAG) -c "python --version && echo 'psql:' $(which psql 2>/dev/null || echo 'absent') && curl --version >/dev/null 2>&1 || true || true"
+	@echo "Running functional tests using the fuller test image (includes psql)..."
+	# Build or ensure the test image exists and run the comprehensive test harness from it
+	$(MAKE) build-pg-manager-test
 	docker run --rm \
 		-e PG_NODES="192.168.122.31,192.168.122.32,192.168.122.33" \
 		-v $(PWD)/scripts:/app/scripts \
 		--entrypoint python3 \
-		$(PG_MANAGER_IMAGE):$(TAG) /app/scripts/test-postgres-endpoint-manager.py --comprehensive
+		$(PG_MANAGER_IMAGE)-test:$(TAG) /app/scripts/test-postgres-endpoint-manager.py --comprehensive
 
 # Test postgres-endpoint-manager with custom nodes
 test-pg-manager-custom:

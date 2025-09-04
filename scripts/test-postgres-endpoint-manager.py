@@ -143,8 +143,10 @@ class MockPostgreSQLEndpointManager(PostgreSQLEndpointManager):
             'TZ': 'UTC'
         }
 
+        # Only set defaults if not already provided by the caller (so tests can inject custom values)
         for key, value in test_env.items():
-            os.environ[key] = value
+            if key not in os.environ:
+                os.environ[key] = value
 
     def check_k8s_environment(self) -> bool:
         """Override to always return False for testing"""

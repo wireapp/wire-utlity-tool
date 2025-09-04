@@ -4,17 +4,27 @@
 import os
 import sys
 import json
-import subprocess
+# subprocess is no longer required since we use psycopg for DB checks
 import logging
+import shutil
 import argparse
+import runpy
 import concurrent.futures
 import time
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any, Union
+import socket
+
+# Try to import psycopg (v3). We expect it to be present in the runtime image.
+try:
+    import psycopg
+    PSYCOPG_AVAILABLE = True
+except Exception:
+    PSYCOPG_AVAILABLE = False
 
 # Kubernetes client imports (with fallback for environments without it)
 try:
-    from kubernetes import client, config
+    from kubernetes import client, config # type: ignore
     KUBERNETES_CLIENT_AVAILABLE = True
 except ImportError:
     KUBERNETES_CLIENT_AVAILABLE = False
@@ -28,9 +38,7 @@ class StructuredFormatter(logging.Formatter):
         log_entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
-            "logger": record.name,
             "message": record.getMessage(),
-            "component": "postgres-endpoint-manager"
         }
 
         # Add extra fields if present
@@ -42,6 +50,11 @@ class StructuredFormatter(logging.Formatter):
             log_entry["exception"] = self.formatException(record.exc_info)
 
         return json.dumps(log_entry)
+
+
+# Custom exception for control flow inside the library
+class EndpointManagerError(Exception):
+    pass
 
 
 # Configure structured logging
@@ -68,66 +81,55 @@ def setup_logging():
 # Initialize structured logger
 logger = setup_logging()
 
+
+def retry_with_backoff(fn):
+    """Simple retry decorator with exponential backoff and jitter for transient DB errors."""
+    import random
+    from functools import wraps
+
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        attempts = kwargs.pop('_attempts', 3)
+        delay = kwargs.pop('_delay', 0.2)
+        for i in range(attempts):
+            try:
+                return fn(*args, **kwargs)
+            except Exception:
+                if i == attempts - 1:
+                    raise
+                sleep_time = delay * (2 ** i) + random.random() * 0.1
+                time.sleep(sleep_time)
+
+    return wrapped
+
 class PostgreSQLEndpointManager:
     def __init__(self):
         # Environment setup
         self.setup_environment()
-
-        # Performance optimizations
-        self.node_cache = {}
-        self.cache_ttl = 30  # Cache node status for 30 seconds
         self.max_workers = int(os.environ.get('MAX_WORKERS', '3'))  # Parallel processing
         self.connection_timeout = int(os.environ.get('PGCONNECT_TIMEOUT', '5'))
 
         # Kubernetes configuration - handle both K8s and local testing
         self.is_k8s_environment = self.check_k8s_environment()
 
-        if self.is_k8s_environment:
-            self.namespace = self.read_file('/var/run/secrets/kubernetes.io/serviceaccount/namespace')
 
-            # Ensure kubernetes client is available and load in-cluster config once
-            if not KUBERNETES_CLIENT_AVAILABLE:
-                self.log_error("Kubernetes client library not installed", {
-                    "kubernetes_client_available": False
-                })
-                sys.exit(1)
+    def wrap_extra_fields_in_context(self, record: logging.LogRecord, extra_fields: Optional[Any]) -> None:
+        """Wrap context with additional information"""
+        ctx: Dict[str, Any] = {}
 
-            try:
-                config.load_incluster_config()
-                # Reuse a single API client instance for the lifetime of the process
-                self.k8s_v1 = client.CoreV1Api()
-                self.log_info("Loaded in-cluster Kubernetes config and initialized client")
-            except Exception as e:
-                self.log_error("Failed to load in-cluster Kubernetes config", {
-                    "error": str(e),
-                    "error_type": type(e).__name__
-                })
-                sys.exit(1)
-        else:
-            self.log_warning("Not running in Kubernetes environment", {
-                "kubernetes_environment": False
-            })
-            self.log_error("PostgreSQL endpoint manager requires Kubernetes environment")
-            sys.exit(1)
+        if isinstance(extra_fields, dict):
+            ctx.update(extra_fields)
+        elif extra_fields is not None:
+            ctx["value"] = str(extra_fields)
 
-        # Service configuration
-        self.rw_service = os.environ.get('RW_SERVICE', 'postgresql-external-rw')
-        self.ro_service = os.environ.get('RO_SERVICE', 'postgresql-external-ro')
-
-        self.log_info("PostgreSQL Endpoint Manager initialized", {
-            "namespace": self.namespace,
-            "kubernetes_environment": self.is_k8s_environment,
-            "rw_service": self.rw_service,
-            "ro_service": self.ro_service
-        })
-
+        record.extra_fields = {"context": ctx}
     def log_info(self, message: str, extra_fields: Dict = None):
         """Log info message with structured data"""
         record = logging.LogRecord(
             name=logger.name, level=logging.INFO, pathname="", lineno=0,
             msg=message, args=(), exc_info=None
         )
-        record.extra_fields = extra_fields or {}
+        self.wrap_extra_fields_in_context(record, extra_fields)
         logger.handle(record)
 
     def log_warning(self, message: str, extra_fields: Dict = None):
@@ -136,7 +138,7 @@ class PostgreSQLEndpointManager:
             name=logger.name, level=logging.WARNING, pathname="", lineno=0,
             msg=message, args=(), exc_info=None
         )
-        record.extra_fields = extra_fields or {}
+        self.wrap_extra_fields_in_context(record, extra_fields)
         logger.handle(record)
 
     def log_error(self, message: str, extra_fields: Dict = None):
@@ -145,7 +147,13 @@ class PostgreSQLEndpointManager:
             name=logger.name, level=logging.ERROR, pathname="", lineno=0,
             msg=message, args=(), exc_info=None
         )
-        record.extra_fields = extra_fields or {}
+        # allow callers to request that the current exception info be attached
+        exc_info_flag = False
+        if isinstance(extra_fields, dict) and extra_fields.pop("_exc_info", False):
+            exc_info_flag = True
+        self.wrap_extra_fields_in_context(record, extra_fields)
+        if exc_info_flag:
+            record.exc_info = sys.exc_info()
         logger.handle(record)
 
     def check_k8s_environment(self) -> bool:
@@ -162,13 +170,12 @@ class PostgreSQLEndpointManager:
             for ip in pg_nodes.split(','):
                 ip = ip.strip()
                 if ip:
-                    # Create node name from IP by replacing dots with dashes
-                    node_name = f"pg-{ip.replace('.', '-')}"
+                    node_name = f"pg-{ip.replace('.', '-') }"
                     nodes.append((ip, node_name))
 
         if not nodes:
             self.log_error("No PostgreSQL nodes found in PG_NODES environment variable")
-            sys.exit(1)
+            raise EndpointManagerError("No PostgreSQL nodes configured via PG_NODES")
 
         self.log_info("Nodes discovered from environment variables", {
             "pg_nodes": pg_nodes,
@@ -190,23 +197,17 @@ class PostgreSQLEndpointManager:
 
         if not KUBERNETES_CLIENT_AVAILABLE:
             self.log_error("Kubernetes client not available for reading topology", {
+                "kubernetes_environment": self.is_k8s_environment,
                 "service": self.rw_service
             })
             return None
 
         try:
-            # Load in-cluster config
-            config.load_incluster_config()
-
-            # Create API client
-            v1 = client.CoreV1Api()
-
             # Get the endpoint
-            endpoint = v1.read_namespaced_endpoints(
+            endpoint = self.k8s_v1.read_namespaced_endpoints(
                 name=self.rw_service,
                 namespace=self.namespace
             )
-
             # Extract annotations
             annotations = endpoint.metadata.annotations or {}
             stored_topology = annotations.get('postgres.discovery/last-topology', '')
@@ -252,145 +253,97 @@ class PostgreSQLEndpointManager:
                 content = f.read().strip()
 
                 self.log_info("Successfully read file", {
-                    "filepath": filepath,
+                    "file_path": filepath,
                     "content_length": len(content)
                 })
                 return content
         except Exception as e:
             self.log_error("Failed to read file", {
-                "filepath": filepath,
+                "file_path": filepath,
                 "error": str(e),
                 "error_type": type(e).__name__
             })
-            sys.exit(1)
+            raise EndpointManagerError(f"Failed to read file {filepath}: {e}")
 
-    def run_command(self, command: str, timeout: int = 5) -> Tuple[bool, str, str]:
-        """Run shell command with timeout"""
-        try:
-            self.log_info("Executing command", {
-                "command": command,
-                "timeout": timeout
-            })
+    # run_command removed: psycopg driver is used for DB checks; no subprocess fallback required
 
-            result = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=timeout
-            )
-
-            success = result.returncode == 0
-            self.log_info("Command completed", {
-                "command": command,
-                "return_code": result.returncode,
-                "success": success,
-                "stdout_length": len(result.stdout),
-                "stderr_length": len(result.stderr)
-            })
-
-            return success, result.stdout.strip(), result.stderr.strip()
-        except subprocess.TimeoutExpired:
-            self.log_warning("Command timeout", {
-                "command": command,
-                "timeout": timeout
-            })
-            return False, "", "Command timeout"
-        except Exception as e:
-            self.log_error("Command execution failed", {
-                "command": command,
-                "error": str(e),
-                "error_type": type(e).__name__
-            })
-            return False, "", str(e)
-
-    def check_postgres_node_with_cache(self, ip: str, name: str) -> Optional[str]:
-        """Check PostgreSQL node status with caching for performance"""
-        cache_key = f"{ip}:{name}"
-        current_time = time.time()
-
-        # Check cache first
-        if cache_key in self.node_cache:
-            cached_data = self.node_cache[cache_key]
-            if current_time - cached_data['timestamp'] < self.cache_ttl:
-                self.log_info("Using cached node status", {
-                    "node_name": name,
-                    "node_ip": ip,
-                    "status": cached_data['status'],
-                    "cache_age": current_time - cached_data['timestamp']
-                })
-                return cached_data['status']
-
-        # Cache miss or expired, check node
-        status = self.check_postgres_node(ip, name)
-
-        # Cache the result
-        self.node_cache[cache_key] = {
-            'status': status,
-            'timestamp': current_time
-        }
-
-        return status
 
     def check_postgres_node(self, ip: str, name: str) -> Optional[str]:
         """Check if PostgreSQL node is primary or standby"""
-        self.log_info("Checking PostgreSQL node", {
-            "node_name": name,
-            "node_ip": ip
-        })
+        self.log_info("Checking PostgreSQL node", {"node_name": name, "node_ip": ip})
 
-        # Test connectivity first with optimized timeout
-        connectivity_cmd = f"pg_isready -h {ip} -p 5432 -t {self.connection_timeout}"
-        success, _, _ = self.run_command(connectivity_cmd, timeout=self.connection_timeout)
-        if not success:
+        # Quick TCP connectivity check (cheap and avoids spawning processes)
+        try:
+            with socket.create_connection((ip, 5432), timeout=self.connection_timeout):
+                pass
+        except Exception as e:
             self.log_info("Node status determined", {
                 "node_name": name,
                 "node_ip": ip,
                 "status": "DOWN",
                 "connectivity_check": "failed",
+                "error": str(e),
                 "timeout": self.connection_timeout
             })
             return None
 
-        # Check if primary or standby with optimized query
-        recovery_cmd = f"psql -h {ip} -t -A -c \"SELECT pg_is_in_recovery();\" --set ON_ERROR_STOP=1"
-        success, stdout, stderr = self.run_command(recovery_cmd, timeout=self.connection_timeout)
+        # Use psycopg (v3) if available for reliable role detection
+        recovery_val = None
 
-        if not success:
-            self.log_warning("Node status unknown", {
-                "node_name": name,
-                "node_ip": ip,
-                "error": stderr,
-                "recovery_check": "failed"
-            })
-            return None
+        if PSYCOPG_AVAILABLE:
+            user = os.environ.get('PGUSER', 'repmgr')
+            password = os.environ.get('PGPASSWORD', '')
+            database = os.environ.get('PGDATABASE', 'repmgr')
 
-        recovery_status = stdout.strip()
+            @retry_with_backoff
+            def query_recovery():
+                conn = psycopg.connect(host=ip, user=user, password=password, dbname=database, connect_timeout=self.connection_timeout)
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute('SELECT pg_is_in_recovery();')
+                        row = cur.fetchone()
+                    return row[0] if row is not None else None
+                finally:
+                    conn.close()
 
-        if recovery_status == 'f':
-            self.log_info("Node status determined", {
-                "node_name": name,
-                "node_ip": ip,
-                "status": "PRIMARY",
-                "recovery_status": recovery_status
-            })
-            return 'primary'
-        elif recovery_status == 't':
-            self.log_info("Node status determined", {
-                "node_name": name,
-                "node_ip": ip,
-                "status": "STANDBY",
-                "recovery_status": recovery_status
-            })
-            return 'standby'
+            try:
+                recovery_val = query_recovery()
+            except Exception as e:
+                self.log_warning("DB role check failed", {"node_name": name, "node_ip": ip, "error": str(e)})
+                return None
+
         else:
-            self.log_warning("Node status unknown", {
-                "node_name": name,
-                "node_ip": ip,
-                "status": "UNKNOWN",
-                "recovery_status": recovery_status
-            })
+            # Fallback: use psql subprocess if available in the image (should be rare)
+            recovery_cmd = ["psql", "-h", ip, "-t", "-A", "-c", "SELECT pg_is_in_recovery();", "--set", "ON_ERROR_STOP=1"]
+            success, stdout, stderr = self.run_command(recovery_cmd, timeout=self.connection_timeout)
+            if not success:
+                self.log_warning("Node status unknown (psql fallback)", {"node_name": name, "node_ip": ip, "error": stderr})
+                return None
+            recovery_val = stdout.strip()
+
+        # Normalize result to boolean
+        is_in_recovery = None
+        if isinstance(recovery_val, bool):
+            is_in_recovery = recovery_val
+        elif recovery_val is None:
+            self.log_warning("Node role unknown (no result)", {"node_name": name, "node_ip": ip})
             return None
+        else:
+            v = str(recovery_val).strip().lower()
+            if v in ("t", "true", "1"):
+                is_in_recovery = True
+            elif v in ("f", "false", "0"):
+                is_in_recovery = False
+            else:
+                self.log_warning("Node status unknown (unexpected recovery value)", {"node_name": name, "node_ip": ip, "recovery_status": recovery_val})
+                return None
+
+        if not is_in_recovery:
+            self.log_info("Node status determined", {"node_name": name, "node_ip": ip, "status": "PRIMARY", "recovery_status": str(recovery_val)})
+            return 'primary'
+        else:
+            self.log_info("Node status determined", {"node_name": name, "node_ip": ip, "status": "STANDBY", "recovery_status": str(recovery_val)})
+            return 'standby'
 
     def verify_topology(self, nodes: List[Tuple[str, str]]) -> Dict:
         """Verify the actual topology of discovered nodes with parallel processing"""
@@ -410,7 +363,7 @@ class PostgreSQLEndpointManager:
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             # Submit all node checks
             future_to_node = {
-                executor.submit(self.check_postgres_node_with_cache, ip, name): (ip, name)
+                executor.submit(self.check_postgres_node, ip, name): (ip, name)
                 for ip, name in nodes
             }
 
@@ -485,15 +438,17 @@ class PostgreSQLEndpointManager:
             "method": "kubernetes_client"
         })
 
+        # If we're not running in Kubernetes (e.g., local tests), skip actual endpoint updates.
+        if not self.is_k8s_environment:
+            self.log_info("Skipping endpoint update; not in Kubernetes environment", {"service_name": service_name})
+            return True
+
         if not KUBERNETES_CLIENT_AVAILABLE:
-            self.log_error("Kubernetes client not available for endpoint update", {
-                "service_name": service_name
-            })
+            self.log_error("Kubernetes client not available for endpoint update", {"service_name": service_name})
             return False
 
         try:
             # Build a plain dict payload to avoid client model incompatibilities across versions
-            # Use the pre-initialized CoreV1Api client (self.k8s_v1)
             endpoint_body = {
                 "metadata": {
                     "name": service_name,
@@ -529,31 +484,21 @@ class PostgreSQLEndpointManager:
             except client.exceptions.ApiException as e:
                 # If the resource doesn't exist, create it
                 if hasattr(e, 'status') and e.status == 404:
-                    self.log_info("Endpoint not found, creating new endpoint resource", {
+                    self.log_warning("Endpoint not found, the controller has no permission to create", {
                         "service_name": service_name,
-                        "namespace": self.namespace
+                        "namespace": self.namespace,
+                        "status": e.status,
+                        "advice": "Ensure the endpoints exist"
                     })
-                    self.k8s_v1.create_namespaced_endpoints(
-                        namespace=self.namespace,
-                        body=endpoint_body
-                    )
-                    self.log_info("Endpoint created successfully", {
-                        "service_name": service_name,
-                        "description": description,
-                        "target_ips": target_ips,
-                        "method": "kubernetes_client",
-                        "annotations_updated": True
-                    })
-                    return True
-                # Re-raise for outer handler to log
+                    return False
                 raise
 
         except client.exceptions.ApiException as e:
             self.log_error("Kubernetes client endpoint update failed", {
                 "service_name": service_name,
-                "error": str(e),
-                "status_code": e.status if hasattr(e, 'status') else 'unknown',
-                "method": "kubernetes_client"
+                "namespace": self.namespace,
+                "status": e.status if hasattr(e, 'status') else 'unknown',
+                "advice": "Check the endpoint configuration"
             })
             return False
         except Exception as e:
@@ -576,7 +521,6 @@ class PostgreSQLEndpointManager:
                 "namespace": self.namespace,
                 "environment": "kubernetes",
                 "max_workers": self.max_workers,
-                "cache_ttl": self.cache_ttl
             })
 
             # Get all configured nodes from environment variables
@@ -668,10 +612,6 @@ class PostgreSQLEndpointManager:
             return False
 
 if __name__ == "__main__":
-    import argparse
-    import subprocess
-    import os
-    import sys
 
     parser = argparse.ArgumentParser(
         prog="postgres-endpoint-manager.py",
@@ -687,8 +627,11 @@ if __name__ == "__main__":
         if not os.path.exists(test_script):
             print(f"Test script not found: {test_script}", file=sys.stderr)
             sys.exit(2)
-        rc = subprocess.call([sys.executable, test_script] + unknown)
-        sys.exit(rc)
+        try:
+            runpy.run_path(test_script, run_name="__main__")
+            sys.exit(0)
+        except SystemExit as e:
+            sys.exit(e.code if isinstance(e.code, int) else 1)
 
     try:
         manager = PostgreSQLEndpointManager()

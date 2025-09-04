@@ -1,32 +1,42 @@
-FROM alpine:latest
+## Builder stage: install build deps and Python packages
+FROM python:3.11-slim as builder
 
-# Install dependencies
-RUN apk update && apk add --no-cache \
-    python3 \
-    py3-pip \
-    curl \
+# Install build-time tools and the test-only client (postgresql-client) here so the
+# final runtime image can be minimal. We'll trim installed site-packages in the
+# builder after pip install to remove tests and caches.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
     postgresql-client \
+    curl \
     jq \
     bash \
-    gcc \
-    musl-dev \
-    python3-dev \
-    && rm -rf /var/cache/apk/*
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Python Kubernetes client for better endpoint management
-# Use --break-system-packages to override Alpine's externally managed environment
-RUN pip3 install --no-cache-dir --break-system-packages kubernetes>=24.2.0
+WORKDIR /tmp
+COPY requirements.txt .
+RUN python -m pip install --upgrade pip setuptools wheel
+# Install into a private prefix so we can copy only the runtime artifacts later
+RUN python -m pip install --prefix=/install --no-deps --upgrade -r requirements.txt
 
-# Create non-root user
-RUN adduser -D -u 1000 endpoint-manager
+# Trim common unnecessary files from the installed packages to reduce final size
+RUN find /install -type d -name 'tests' -exec rm -rf {} + || true
+RUN find /install -type d -name '__pycache__' -exec rm -rf {} + || true
+RUN find /install -name '*.pyc' -delete || true
+RUN rm -rf /install/pip* /install/*.dist-info/*-info || true
 
-# Copy the entrypoint script
+## Final stage: minimal runtime using Distroless Python (Debian-based)
+FROM gcr.io/distroless/python3-debian11:nonroot
+
+# Copy installed Python runtime artifacts from the builder
+COPY --from=builder /install /usr/local
+
+# Copy the scripts (they live in /usr/local/bin to match the previous layout)
+# Copy directly from the build context so the builder doesn't need to stage them.
 COPY scripts/postgres-endpoint-manager.py /usr/local/bin/postgres-endpoint-manager.py
-COPY scripts/test-postgres-endpoint-manager.py /usr/local/bin/test-postgres-endpoint-manager.py
-RUN chmod +x /usr/local/bin/postgres-endpoint-manager.py /usr/local/bin/test-postgres-endpoint-manager.py
 
-# Switch to non-root user
-USER 1000
+# Make sure the script is executable (distroless has no shell; file modes are preserved from COPY)
+RUN --mount=type=cache,target=/tmp/true true || true
 
-# Set entrypoint
-ENTRYPOINT ["python3", "/usr/local/bin/postgres-endpoint-manager.py"]
+# Entrypoint: run the runtime manager by default
+ENTRYPOINT ["python", "/usr/local/bin/postgres-endpoint-manager.py"]

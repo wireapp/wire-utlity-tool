@@ -1,0 +1,71 @@
+flowchart TD
+    A[Start: PostgreSQL Endpoint Manager] --> B[Initialize Environment]
+
+    B --> C["Setup PostgreSQL Environment\nPGUSER=repmgr\nPGDATABASE=repmgr\nPGPASSWORD=***"]
+
+    C --> D["Performance Setup\nNode Cache (TTL: 30s)\nMax Workers: 3\nConnection Timeout: 5s"]
+
+    D --> E[Check Kubernetes Environment]
+
+    E --> F{Running in K8s?}
+    F -->|No| G[ERROR: Requires K8s Environment<br/>Exit with Error]
+    F -->|Yes| H[Load In-Cluster Config<br/>Initialize K8s Client]
+
+    H --> I{Kubernetes Client<br/>Available?}
+    I -->|No| J["ERROR: K8s Client Missing\nExit with Error"]
+    I -->|Yes| K[Read ServiceAccount<br/>Namespace]
+
+    K --> L["Initialize CoreV1Api Client\nService Names Setup"]
+
+    L --> M["Get Nodes from Environment\nPG_NODES variable"]
+
+    M --> N{PG_NODES<br/>Found?}
+    N -->|No| O["ERROR: No Nodes Configured\nExit with Error"]
+    N -->|Yes| P["Parse Node IPs\nCreate Node Names"]
+
+    P --> Q["Get Stored Topology\nfrom RW Service Annotations"]
+
+    Q --> R[Verify Topology<br/>Parallel Node Checking]
+
+    R --> S{"Primary\nFound?"}
+    S -->|No| T["ERROR: No Primary Node\nExit with Error"]
+    S -->|Multiple| U["ERROR: Split-Brain Detected\nExit with Error"]
+    S -->|Yes| V["Create Current Topology Signature"]
+
+    V --> W[Compare Topology Signatures]
+
+    W --> X{"Topology\nChanged?"}
+    X -->|No| Y["No Updates Needed\nLog Success & Exit"]
+    X -->|Yes| Z["Update Endpoints\nParallel Processing"]
+
+    Z --> AA[Update RW Service<br/>Primary IP Only]
+    Z --> BB[Update RO Service<br/>Standby IPs Only]
+
+    AA --> CC{"RW Update\nSuccess?"}
+    BB --> DD{"RO Update\nSuccess?"}
+
+    CC --> EE[Collect Results]
+    DD --> EE
+
+    EE --> FF{Both Updates<br/>Successful?}
+    FF -->|Yes| GG["Success: Log Performance\nMetrics & Exit"]
+    FF -->|No| HH["Error: Partial Update\nLog Failure & Exit"]
+
+    G --> II[End: Exit Code 1]
+    J --> II
+    O --> II
+    T --> II
+    U --> II
+    Y --> JJ[End: Exit Code 0]
+    GG --> JJ
+    HH --> II
+
+    style A fill:#e1f5fe
+    style G fill:#ffcdd2
+    style J fill:#ffcdd2
+    style O fill:#ffcdd2
+    style T fill:#ffcdd2
+    style U fill:#ffcdd2
+    style Y fill:#c8e6c9
+    style GG fill:#c8e6c9
+    style HH fill:#ffcdd2
