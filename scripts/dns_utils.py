@@ -18,5 +18,3 @@ def resolve_name(name: str) -> List[str]:
     except socket.gaierror as exc:
         log.error(f"Failed to resolve {name}: {exc}")
         return []
-    
-                                                `

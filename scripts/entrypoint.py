@@ -6,13 +6,11 @@ import socket
 import subprocess
 import logging
 from pathlib import Path
-from cassandra.cluster  import Cluster, ExecutionProfile, EXEC_PROFILE_DEFAULT
-from cassandra.policies import RoundRobinPolicy
 
 #  dns_util.py – provides resolve_name(name) → List[str]
 #  probe.py   – provides tcp_probe(host, port, timeout=3) → bool
-from scripts.dns_util import resolve_name          # ← your DNS utility
-from scripts.probe    import tcp_probe             # ← your probe function
+from .dns_utils import resolve_name
+from .tcp_probe import tcp_probe
 
 import argparse
 
@@ -29,21 +27,29 @@ MINIO_SERVICE_ENDPOINT = os.getenv('MINIO_SERVICE_ENDPOINT', '')
 MINIO_ACCESS_KEY = os.getenv('MINIO_ACCESS_KEY', '')
 MINIO_SECRET_KEY = os.getenv('MINIO_SECRET_KEY', '')
 
-CASSANDRA_SERVICE_NAME = os.getenv('CASSANDRA_SERVICE_NAME', 'cassandra')
+CASSANDRA_SERVICE_NAME = os.getenv('CASSANDRA_SERVICE_NAME', '')
 CASSANDRA_SERVICE_PORT = int(os.getenv('CASSANDRA_SERVICE_PORT', '9042'))
 
-RABBITMQ_SERVICE_NAME = os.getenv('RABBITMQ_SERVICE_NAME', 'rabbitmq')
+# only import these if there is a cassandra to test.
+try:
+    from cassandra.cluster  import Cluster, ExecutionProfile, EXEC_PROFILE_DEFAULT
+    from cassandra.policies import RoundRobinPolicy
+except ImportError:
+    Cluster = None
+    logger.warning("Cassandra python libraries not available; skipping cassandra tests.")
+    
+RABBITMQ_SERVICE_NAME = os.getenv('RABBITMQ_SERVICE_NAME', '')
 RABBITMQ_SERVICE_PORT = int(os.getenv('RABBITMQ_SERVICE_PORT', '5672'))
-RABBITMQ_MGMT_PORT = os.getenv('RABBITMQ_MGMT_PORT', '15672')
-RABBITMQ_USERNAME = os.getenv('RABBITMQ_USERNAME', 'guest')
-RABBITMQ_PASSWORD = os.getenv('RABBITMQ_PASSWORD', 'guest')
+RABBITMQ_MGMT_PORT = int(os.getenv('RABBITMQ_MGMT_PORT', '15672'))
+RABBITMQ_USERNAME = os.getenv('RABBITMQ_USERNAME', '')
+RABBITMQ_PASSWORD = os.getenv('RABBITMQ_PASSWORD', '')
 
-ES_SERVICE_NAME = os.getenv('ES_SERVICE_NAME', 'elasticsearch-external')
-ES_PORT = os.getenv('ES_PORT', '9200')
-PGHOST = os.getenv('PGHOST', 'postgresql')
+ES_SERVICE_NAME = os.getenv('ES_SERVICE_NAME', '')
+ES_PORT = int(os.getenv('ES_PORT', '9200'))
+PGHOST = os.getenv('PGHOST', '')
 PGPORT = int(os.getenv('PGPORT', '5432'))
-PGUSER = os.getenv('PGUSER', 'wire-server')
-PGDATABASE = os.getenv('PGDATABASE', 'wire-server')
+PGUSER = os.getenv('PGUSER', '')
+PGDATABASE = os.getenv('PGDATABASE', '')
 
 ENABLE_PROBE_THREAD = os.getenv('ENABLE_PROBE_THREAD', 'false').lower() == 'true'
 
@@ -233,31 +239,41 @@ def check_all_services():
     logger.info("Checking Service Connectivity")
 
     # MinIO
-    minio_endpoint = MINIO_SERVICE_ENDPOINT
-    minio_host, minio_port = parse_minio_endpoint(minio_endpoint)
     minio_status = False
-    if minio_host and minio_port:
-        minio_status = check_service(minio_host, minio_port, "MinIO")
+    if MINIO_SERVICE_ENDPOINT:
+        minio_host, minio_port = parse_minio_endpoint(MINIO_SERVICE_ENDPOINT)
+        if minio_host and minio_port:
+            minio_status = check_service(minio_host, minio_port, "MinIO")
+    else:
+        logger.info("Skipping minio service test; no service defined.")
 
     # Cassandra
-    cassandra_host = CASSANDRA_SERVICE_NAME
-    cassandra_port = CASSANDRA_SERVICE_PORT
-    cassandra_status = check_service(cassandra_host, cassandra_port, "Cassandra")
+    cassandra_status = False
+    if CASSANDRA_SERVICE_NAME and CASSANDRA_SERVICE_PORT:
+        cassandra_status = check_service(CASSANDRA_SERVICE_NAME, CASSANDRA_SERVICE_PORT, "Cassandra")
+    else:
+        logger.info("Skipping cassandra service test; no service defined.")
 
     # RabbitMQ
-    rabbitmq_host = RABBITMQ_SERVICE_NAME
-    rabbitmq_port = int(RABBITMQ_SERVICE_PORT)
-    rabbitmq_status = check_service(rabbitmq_host, rabbitmq_port, "RabbitMQ")
+    rabbitmq_status = False
+    if RABBITMQ_SERVICE_NAME and RABBITMQ_SERVICE_PORT:
+        rabbitmq_status = check_service(RABBITMQ_SERVICE_NAME, RABBITMQ_SERVICE_PORT, "RabbitMQ")
+    else:
+        logger.info("Skipping rabbitMQ service test; no service defined.")
 
     # Elasticsearch
-    es_host = ES_SERVICE_NAME
-    es_port = int(ES_PORT)
-    es_status = check_service(es_host, es_port, "Elasticsearch")
+    es_status = False
+    if ES_SERVICE_NAME and ES_PORT:
+        es_status = check_service(ES_SERVICE_NAME, ES_PORT, "Elasticsearch")
+    else:
+        logger.info("Skipping elasticsearch service test; no service defined.")
 
     # PostgreSQL
-    pg_host = PGHOST
-    pg_port = int(PGPORT)
-    pg_status = check_service(pg_host, pg_port, "PostgreSQL")
+    pg_status = False
+    if PGHOST and PGPORT:
+        pg_status = check_service(PGHOST, PGPORT, "PostgreSQL")
+    else:
+        logger.info("Skipping PostgreSQL service test; no service defined.")
 
     return minio_status, cassandra_status, rabbitmq_status, es_status, pg_status
 
@@ -276,53 +292,71 @@ def status_full() -> bool:
     overall_ok = True
 
     # ---- MINIO -------------------------------------------------
-    minio_host, minio_port = parse_minio_endpoint(MINIO_SERVICE_ENDPOINT)
-    for ip in resolve_name(minio_host):
-        ok = tcp_probe(ip, minio_port)
-        if ok:
-            # reuse the existing client‑check – we force the alias to the IP
-            alias_cmd = f"mc alias set preflight-minio http://{ip}:{minio_port} {MINIO_ACCESS_KEY} {MINIO_SECRET_KEY}"
-            ok = run_command(alias_cmd)[0] and run_command("mc ls preflight-minio")[0]
-        _print_row("MinIO", ip, minio_port, ok)
-        overall_ok = overall_ok and ok
+    if MINIO_SERVICE_ENDPOINT:
+        minio_host, minio_port = parse_minio_endpoint(MINIO_SERVICE_ENDPOINT)
+        for ip in resolve_name(minio_host):
+            ok = tcp_probe(ip, minio_port)
+            if ok:
+                # reuse the existing client‑check – we force the alias to the IP
+                alias_cmd = f"mc alias set preflight-minio http://{ip}:{minio_port} {MINIO_ACCESS_KEY} {MINIO_SECRET_KEY}"
+                ok = run_command(alias_cmd)[0] and run_command("mc ls preflight-minio")[0]
+            _print_row("MinIO", ip, minio_port, ok)
+            overall_ok = overall_ok and ok
+    else:
+        logger.info("Skipping minio service test; no service defined.")
 
     # ---- CASSANDRA ---------------------------------------------
-    for ip in resolve_name(CASSANDRA_SERVICE_NAME):
-        ok = tcp_probe(ip, CASSANDRA_SERVICE_PORT) and check_cassandra_health(ip, CASSANDRA_SERVICE_PORT)
-        _print_row("Cassandra", ip, CASSANDRA_SERVICE_PORT, ok)
-        overall_ok = overall_ok and ok
+    if CASSANDRA_SERVICE_NAME and CASSANDRA_SERVICE_PORT:
+        for ip in resolve_name(CASSANDRA_SERVICE_NAME):
+            ok = tcp_probe(ip, CASSANDRA_SERVICE_PORT) and check_cassandra_health(ip, CASSANDRA_SERVICE_PORT)
+            _print_row("Cassandra", ip, CASSANDRA_SERVICE_PORT, ok)
+            overall_ok = overall_ok and ok
+    else:
+        logger.info("Skipping cassandra service test; no service defined.")
 
     # ---- RABBITMQ ----------------------------------------------
-    for ip in resolve_name(RABBITMQ_SERVICE_NAME):
-        ok = tcp_probe(ip, RABBITMQ_SERVICE_PORT)
-        if ok:
-            # health‑check via the management API
-            mgmt_url = f"http://{ip}:{RABBITMQ_MGMT_PORT}/api/overview"
-            ok = check_rabbitmq_service_health(mgmt_url, RABBITMQ_USERNAME, RABBITMQ_PASSWORD)
-        _print_row("RabbitMQ", ip, RABBITMQ_SERVICE_PORT, ok)
-        overall_ok = overall_ok and ok
+    if RABBITMQ_SERVICE_NAME and RABBITMQ_SERVICE_PORT:
+        for ip in resolve_name(RABBITMQ_SERVICE_NAME):
+            ok = tcp_probe(ip, RABBITMQ_SERVICE_PORT)
+            if ok:
+                # health‑check via the management API
+                mgmt_url = f"http://{ip}:{RABBITMQ_MGMT_PORT}/api/overview"
+                ok = check_rabbitmq_service_health(mgmt_url, RABBITMQ_USERNAME, RABBITMQ_PASSWORD)
+            _print_row("RabbitMQ", ip, RABBITMQ_SERVICE_PORT, ok)
+            overall_ok = overall_ok and ok
+    else:
+        logger.info("Skipping rabbitMQ service test; no service defined.")
 
     # ---- ELASTICSEARCH -----------------------------------------
-    for ip in resolve_name(ES_SERVICE_NAME):
-        ok = tcp_probe(ip, ES_PORT)
-        if ok:
-            health_url = f"http://{ip}:{ES_PORT}/_cluster/health"
-            ok = check_service_health(health_url)
-        _print_row("Elastic", ip, ES_PORT, ok)
-        overall_ok = overall_ok and ok
+    if ES_SERVICE_NAME and ES_PORT:
+        for ip in resolve_name(ES_SERVICE_NAME):
+            ok = tcp_probe(ip, ES_PORT)
+            if ok:
+                health_url = f"http://{ip}:{ES_PORT}/_cluster/health"
+                ok = check_service_health(health_url)
+            _print_row("Elastic", ip, ES_PORT, ok)
+            overall_ok = overall_ok and ok
+    else:
+        logger.info("Skipping elasticsearch service test; no service defined.")
 
     # ---- POSTGRESQL --------------------------------------------
-    for ip in resolve_name(PGHOST):
-        ok = tcp_probe(ip, PGPORT)
-        if ok:
-            ok = check_postgresql_connection(ip, PGPORT, PGUSER, PGDATABASE)
-        _print_row("PostgreSQL", ip, PGPORT, ok)
-        overall_ok = overall_ok and ok
+    if PGHOST and PGPORT:
+        for ip in resolve_name(PGHOST):
+            ok = tcp_probe(ip, PGPORT)
+            if ok:
+                ok = check_postgresql_connection(ip, PGPORT, PGUSER, PGDATABASE)
+            _print_row("PostgreSQL", ip, PGPORT, ok)
+            overall_ok = overall_ok and ok
+    else:
+        logger.info("Skipping PostgreSQL service test; no service defined.")
 
     return overall_ok
 
 def check_cassandra_health(host, port, username=None, password=None):
     """Check Cassandra health using cassandra-driver with execution profiles."""
+    if Cluster is None:
+        logger.info("Cassandra driver unavailable – skipping Cassandra health check.")
+        return False
     try:
         host = host or CASSANDRA_SERVICE_NAME
         port = port or CASSANDRA_SERVICE_PORT
@@ -416,19 +450,19 @@ def status(interval=120):
             logger.info("=== Periodic Service Status Check ===")
 
             # MinIO HTTP health check (if env set), else TCP
-            minio_endpoint = MINIO_SERVICE_ENDPOINT
-            minio_health_url = f"{minio_endpoint}/minio/health/live" if minio_endpoint else None
-            check_service_health(minio_health_url)
+            if MINIO_SERVICE_ENDPOINT:
+                minio_health_url = f"{MINIO_SERVICE_ENDPOINT}/minio/health/live"
+                check_service_health(minio_health_url)
 
             #  Cassandra health check
             cassandra_host = CASSANDRA_SERVICE_NAME
-            cassandra_port = int(CASSANDRA_SERVICE_PORT)
+            cassandra_port = CASSANDRA_SERVICE_PORT
             check_cassandra_health(cassandra_host, cassandra_port)
 
             # RabbitMQ HTTP health check (if env set), else TCP
             rabbitmq_host = RABBITMQ_SERVICE_NAME
-            rabbitmq_port = int(RABBITMQ_SERVICE_PORT)
-            rabbitmq_mgmt_port = int(RABBITMQ_MGMT_PORT)
+            rabbitmq_port = RABBITMQ_SERVICE_PORT
+            rabbitmq_mgmt_port = RABBITMQ_MGMT_PORT
             rabbitmq_health_url = f"http://{rabbitmq_host}:{rabbitmq_mgmt_port}/api/overview" if rabbitmq_host and rabbitmq_mgmt_port else None
             rabbitmq_nodes_url = f"http://{rabbitmq_host}:{rabbitmq_mgmt_port}/api/nodes"
 
@@ -445,7 +479,7 @@ def status(interval=120):
 
             # Elasticsearch HTTP health check (if env set), else TCP
             es_host = ES_SERVICE_NAME
-            es_port = int(ES_PORT)
+            es_port = ES_PORT
             es_health_url = f"http://{es_host}:{es_port}/_cluster/health" if es_host and es_port else None
 
             check_service_health(es_health_url)
@@ -523,7 +557,6 @@ def _dispatch():
     elif args.command == "status-full":
         ok = status_full()
         sys.exit(0 if ok else 1)
-```
 
 if __name__ == "__main__":
     _dispatch()
