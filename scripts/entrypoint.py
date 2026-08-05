@@ -6,8 +6,15 @@ import socket
 import subprocess
 import logging
 from pathlib import Path
-from cassandra.cluster import Cluster, ExecutionProfile, EXEC_PROFILE_DEFAULT
+from cassandra.cluster  import Cluster, ExecutionProfile, EXEC_PROFILE_DEFAULT
 from cassandra.policies import RoundRobinPolicy
+
+#  dns_util.py – provides resolve_name(name) → List[str]
+#  probe.py   – provides tcp_probe(host, port, timeout=3) → bool
+from scripts.dns_util import resolve_name          # ← your DNS utility
+from scripts.probe    import tcp_probe             # ← your probe function
+
+import argparse
 
 # Configure structured logging
 logging.basicConfig(
@@ -207,6 +214,7 @@ export PS1='\\[\\033[01;32m\\]\\u@wire-utility\\[\\033[00m\\]:\\[\\033[01;34m\\]
 
 # Useful aliases
 alias status='/tmp/status.sh'
+alias status-full='python3 /opt/wire-utility/scripts/entrypoint.py status-full'
 alias ll='ls -alF'
 alias la='ls -A'
 
@@ -252,6 +260,66 @@ def check_all_services():
     pg_status = check_service(pg_host, pg_port, "PostgreSQL")
 
     return minio_status, cassandra_status, rabbitmq_status, es_status, pg_status
+
+def _print_row(service: str, ip: str, port: int, ok: bool) -> None:
+    """One‑line printer used by status_full – keeps the same emoji style."""
+    mark = "✅" if ok else "❌"
+    print(f"{mark} {service:<13} {ip}:{port}")
+
+def status_full() -> bool:
+    """
+    Iterate over **all** IPs for each external service, probe TCP and
+    run the service‑specific client check.
+
+    Returns True only if **every** probe succeeded.
+    """
+    overall_ok = True
+
+    # ---- MINIO -------------------------------------------------
+    minio_host, minio_port = parse_minio_endpoint(MINIO_SERVICE_ENDPOINT)
+    for ip in resolve_name(minio_host):
+        ok = tcp_probe(ip, minio_port)
+        if ok:
+            # reuse the existing client‑check – we force the alias to the IP
+            alias_cmd = f"mc alias set preflight-minio http://{ip}:{minio_port} {MINIO_ACCESS_KEY} {MINIO_SECRET_KEY}"
+            ok = run_command(alias_cmd)[0] and run_command("mc ls preflight-minio")[0]
+        _print_row("MinIO", ip, minio_port, ok)
+        overall_ok = overall_ok and ok
+
+    # ---- CASSANDRA ---------------------------------------------
+    for ip in resolve_name(CASSANDRA_SERVICE_NAME):
+        ok = tcp_probe(ip, CASSANDRA_SERVICE_PORT) and check_cassandra_health(ip, CASSANDRA_SERVICE_PORT)
+        _print_row("Cassandra", ip, CASSANDRA_SERVICE_PORT, ok)
+        overall_ok = overall_ok and ok
+
+    # ---- RABBITMQ ----------------------------------------------
+    for ip in resolve_name(RABBITMQ_SERVICE_NAME):
+        ok = tcp_probe(ip, RABBITMQ_SERVICE_PORT)
+        if ok:
+            # health‑check via the management API
+            mgmt_url = f"http://{ip}:{RABBITMQ_MGMT_PORT}/api/overview"
+            ok = check_rabbitmq_service_health(mgmt_url, RABBITMQ_USERNAME, RABBITMQ_PASSWORD)
+        _print_row("RabbitMQ", ip, RABBITMQ_SERVICE_PORT, ok)
+        overall_ok = overall_ok and ok
+
+    # ---- ELASTICSEARCH -----------------------------------------
+    for ip in resolve_name(ES_SERVICE_NAME):
+        ok = tcp_probe(ip, ES_PORT)
+        if ok:
+            health_url = f"http://{ip}:{ES_PORT}/_cluster/health"
+            ok = check_service_health(health_url)
+        _print_row("Elastic", ip, ES_PORT, ok)
+        overall_ok = overall_ok and ok
+
+    # ---- POSTGRESQL --------------------------------------------
+    for ip in resolve_name(PGHOST):
+        ok = tcp_probe(ip, PGPORT)
+        if ok:
+            ok = check_postgresql_connection(ip, PGPORT, PGUSER, PGDATABASE)
+        _print_row("PostgreSQL", ip, PGPORT, ok)
+        overall_ok = overall_ok and ok
+
+    return overall_ok
 
 def check_cassandra_health(host, port, username=None, password=None):
     """Check Cassandra health using cassandra-driver with execution profiles."""
@@ -394,8 +462,8 @@ def status(interval=120):
     thread = threading.Thread(target=probe, daemon=True)
     thread.start()
 
-def main():
-    """Main entrypoint function"""
+def _interactive_shell():
+    """Main entrypoint, providing an interactive shell session"""
     logger.info("Starting Wire utility debug pod...")
 
     # Start periodic status checks
@@ -428,5 +496,34 @@ def main():
         logger.info("Shutting down...")
         sys.exit(0)
 
+def _dispatch():
+    """CLI dispatcher used when the container is started directly.
+
+    Handles three commands:
+      * interactive – runs the full interactive start‑up (formerly `main()`)
+      * status      – fast one‑host check (just exits 0)
+      * status-full – exhaustive multi‑IP pre‑flight check
+    """
+    parser = argparse.ArgumentParser(prog="wire-utility")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        default="interactive",
+        choices=["interactive", "status", "status-full"],
+        help="interactive shell (default), quick status, or full multi‑IP status",
+    )
+    args = parser.parse_args()
+
+    if args.command == "interactive":
+        _interactive_shell()
+    elif args.command == "status":
+        # Fast path – the Bash alias `status` already prints a table.
+        # We simply exit with success so the container can be used as a one‑shot check.
+        sys.exit(0)
+    elif args.command == "status-full":
+        ok = status_full()
+        sys.exit(0 if ok else 1)
+```
+
 if __name__ == "__main__":
-    main()
+    _dispatch()
