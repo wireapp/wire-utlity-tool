@@ -105,14 +105,16 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     fi \
  && chmod +x /usr/local/bin/mc
 
-# Copy and setup scripts
-COPY scripts/entrypoint.py scripts/es-debug.py /usr/local/bin/
-RUN chmod +x /usr/local/bin/entrypoint.py /usr/local/bin/es-debug.py \
- && ln -s /usr/local/bin/es-debug.py /usr/local/bin/es \
- && ln -s /tmp/status.sh /usr/local/bin/status
-
 # Create non-root user
 RUN adduser --disabled-password --gecos "" --uid 65532 nonroot
+
+# Copy and setup scripts
+RUN mkdir /home/nonroot/scripts
+COPY scripts/*.py /home/nonroot/scripts
+RUN chmod +x /home/nonroot/scripts/entrypoint.py /home/nonroot/scripts/es-debug.py
+
+RUN ln -s /home/nonroot/scripts/es-debug.py /usr/local/bin/es
+RUN ln -s /tmp/status.sh /usr/local/bin/status
 
 # Switch to non-root user and set environment
 USER nonroot
@@ -123,4 +125,4 @@ ENV HOME=/home/nonroot \
 WORKDIR /home/nonroot
 
 # Use Python entrypoint
-ENTRYPOINT ["python3", "-u", "/usr/local/bin/entrypoint.py"]
+ENTRYPOINT ["python3", "-m", "scripts.entrypoint"]
