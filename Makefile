@@ -80,3 +80,10 @@ dev: build test
 # Quick release workflow (build + test + push)
 release: build test push
 	@echo "Released $(UTILITY_IMAGE):$(TAG)"
+
+.PHONY: tar
+# serialise the image as a tarball.
+tar: build
+	@echo -n "Serializing image..."
+	@docker image save $(UTILITY_IMAGE):latest -o wire-utility-tool-`date +%s`.tar
+	@echo done.
