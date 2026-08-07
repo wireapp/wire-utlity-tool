@@ -1,5 +1,5 @@
 # Use Debian Bullseye Slim as base image for better legacy support
-FROM --platform=$TARGETPLATFORM debian:bullseye-slim
+FROM debian:bullseye-slim
 
 # Install essential utilities and networking tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
