@@ -1,4 +1,7 @@
+import filecmp
+import getpass
 import os
+import shutil
 import sys
 import threading
 import time
@@ -12,6 +15,8 @@ from .dns_utils import resolve_name
 from .tcp_probe import tcp_probe
 
 import argparse
+
+from datetime import datetime
 
 # Configure structured logging
 logging.basicConfig(
@@ -57,6 +62,8 @@ PGUSER = os.getenv('PGUSER', '')
 PGDATABASE = os.getenv('PGDATABASE', '')
 
 ENABLE_PROBE_THREAD = os.getenv('ENABLE_PROBE_THREAD', 'false').lower() == 'true'
+
+EXPECTED_USER = "nonroot"
 
 def run_command(command, capture_output=True, check=False):
     """Run shell command"""
@@ -245,7 +252,17 @@ echo ""
 /tmp/status.sh
 '''
     bashrc_file = Path.home() / '.bashrc'
+    timestamp = datetime.now().strftime('%Y%m%d-%s')
+    bashrc_backup = Path.home() / f'.bashrc.{timestamp}'
+
+    if bashrc_file.exists():
+        shutil.move(str(bashrc_file), str(bashrc_backup))
+
     bashrc_file.write_text(bashrc_content)
+
+    if bashrc_backup.exists():
+        if filecmp.cmp(bashrc_file, bashrc_backup, shallow=False):
+            bashrc_backup.unlink() # Delete an identical backup
 
 def check_all_services():
     """Check connectivity to all services"""
@@ -666,7 +683,13 @@ def _interactive_shell():
 
     # Create utility scripts
     create_status_script()
-    create_bashrc()
+
+    current_user = getpass.getuser()
+
+    if current_user == EXPECTED_USER:
+        create_bashrc()
+    else:
+        print(f"Skipping .bashrc creation: User '{current_user}' is not the expected user.")
 
     logger.info("Startup Complete")
     logger.info("Wire utility debug pod ready!")
