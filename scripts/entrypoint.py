@@ -92,27 +92,20 @@ def parse_minio_endpoint(endpoint):
         return endpoint, 80
 
 def check_service(host, port, name):
-    """Check if a service is reachable"""
-    if socket is None:
-        # the import failed earlier
-        logger.warning(
-            f"Socket library not available – skipping {name} check "
-            f"for {host}:{port}"
-        )
-        # We cannot actually test the connection, so treat it as *failed*.
-        return False
-    try:
-        with socket.create_connection((host, port), timeout=3):
-            logger.info(f"{name} ({host}:{port}) is reachable")
-            return True
-    except (socket.error, socket.timeout):
+    """Check if a service is reachable – now delegated to the ``tcp_probe`` helper."""
+    # Use the shared helper; it already contains a socket fallback.
+    ok = tcp_probe(host, port, timeout=3)
+    if ok:
+        logger.info(f"{name} ({host}:{port}) is reachable")
+    else:
         logger.error(f"{name} ({host}:{port}) is unreachable")
+        # Optional DNS‑resolution logging (guarded if socket module is missing)
         try:
-            ip = socket.gethostbyname(host)
+            ip = socket.gethostbyname(host) if socket else host
             logger.info(f"Resolved {name} to IP: {ip}")
         except Exception as e:
             logger.error(f"Failed to resolve {name} host: {e}")
-        return False
+    return ok
 
 def check_service_health(url):
     """Check if an HTTP service is reachable"""
