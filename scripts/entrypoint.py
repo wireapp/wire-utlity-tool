@@ -234,7 +234,9 @@ export PS1='\\[\\033[01;32m\\]\\u@wire-utility\\[\\033[00m\\]:\\[\\033[01;34m\\]
 
 # Useful aliases
 alias status='/tmp/status.sh'
-alias status-full='python3 /opt/wire-utility/scripts/entrypoint.py status-full'
+alias status-full='python3 -m scripts.entrypoint status-full'
+alias versions='python3 -m scripts.entrypoint versions'
+
 alias ll='ls -alF'
 alias la='ls -A'
 
