@@ -50,49 +50,9 @@ RUN mkdir -p /opt/cassandra \
 RUN printf '#!/bin/bash\nexport PYTHONPATH="/opt/cassandra/apache-cassandra-3.11.16/pylib:$PYTHONPATH"\nexec python2 /opt/cassandra/apache-cassandra-3.11.16/bin/cqlsh.py "$@"\n' > /usr/local/bin/cqlsh \
  && chmod +x /usr/local/bin/cqlsh
 
-RUN apt-get install gnupg -y
-
-RUN curl -1sLf "https://keys.openpgp.org/vks/v1/by-fingerprint/0A9AF2115F4687BD29803A206B73A36E6026DFCA" | sudo gpg --dearmor | tee /usr/share/keyrings/com.rabbitmq.team.gpg
-RUN mkdir -p -m 0700 /root/.gnupg && \
- gpg --no-default-keyring --keyring /usr/share/keyrings/com.rabbitmq.team.gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys 6B73A36E6026DFCA
-
-COPY <<EOF /etc/apt/sources.list.d/rabbitmq.list
- deb [arch=amd64 signed-by=/usr/share/keyrings/com.rabbitmq.team.gpg] https://deb1.rabbitmq.com/rabbitmq-erlang/debian/bullseye bullseye main
- deb [arch=amd64 signed-by=/usr/share/keyrings/com.rabbitmq.team.gpg] https://deb2.rabbitmq.com/rabbitmq-erlang/debian/bullseye bullseye main
- deb [arch=amd64 signed-by=/usr/share/keyrings/com.rabbitmq.team.gpg] https://deb1.rabbitmq.com/rabbitmq-server/debian/bullseye bullseye main
- deb [arch=amd64 signed-by=/usr/share/keyrings/com.rabbitmq.team.gpg] https://deb2.rabbitmq.com/rabbitmq-server/debian/bullseye bullseye main
-EOF
-
-RUN apt-get update -y
-
-COPY <<EOF /etc/apt.d/preferences.d/erlang
- Package: erlang*
- Pin: origin RabbitMQ
- # Note: priority of 1001 (greater than 1000) allows for downgrading.
- # To make package downgrading impossible, use a value of 999
- Pin-Priority: 1001
-EOF
-
-RUN apt-get install -y erlang-base \
- erlang-asn1 erlang-crypto erlang-eldap erlang-ftp erlang-inets \
- erlang-mnesia erlang-os-mon erlang-parsetools erlang-public-key \
- erlang-runtime-tools erlang-snmp erlang-ssl \
- erlang-syntax-tools erlang-tftp erlang-tools erlang-xmerl
-
-# Warning: Version restriction here.
-RUN apt-get install rabbitmq-server=3.13.6-1 -y
-
-RUN cp /usr/lib/rabbitmq/lib/rabbitmq_server-3.13.6/plugins/rabbitmq_management-3.13.6/priv/www/cli/rabbitmqadmin /usr/local/bin/ && chmod +x /usr/local/bin/rabbitmqadmin
-
-# Save disk space.
-RUN apt-get remove -y erlang-base \
- erlang-asn1 erlang-crypto erlang-eldap erlang-ftp erlang-inets \
- erlang-mnesia erlang-os-mon erlang-parsetools erlang-public-key \
- erlang-runtime-tools erlang-snmp erlang-ssl \
- erlang-syntax-tools erlang-tftp erlang-tools erlang-xmerl
-
-# Warning: Version restriction here.
-RUN apt-get remove rabbitmq-server=3.13.6-1 -y
+# Install RabbitMQ client with pinned version
+ARG RABBITMQ_VERSION=3.13.6
+RUN curl -fsSL -o /usr/local/bin/rabbitmqadmin "https://raw.githubusercontent.com/rabbitmq/rabbitmq-server/v${RABBITMQ_VERSION}/deps/rabbitmq_management/bin/rabbitmqadmin" && chmod +x /usr/local/bin/rabbitmqadmin
 
 RUN rm -rf /var/lib/apt/lists/*
 
