@@ -428,10 +428,14 @@ def cassandra_version(host: str, port: int) -> str | None:
         # -----------------
         # 3.11.10
         # (1 rows)
-        # We strip the lines and grab the second non‑empty line.
+        # We strip the lines
         lines = [ln.strip() for ln in completed.stdout.splitlines() if ln.strip()]
-        if len(lines) >= 2:
-            return lines[1]          # the version string
+        # Iterate over them
+        for i, line in enumerate(lines):
+            # collapse the separator for easier match and ensure the ouput after separator is not empty (if even possible with cqlsh)
+            if set(line) == {"-"} and i + 1 < len(lines):
+                # return the line with the version number (should be the one after separator)
+                return lines[i+1]
     except Exception as e:           # pragma: no cover – defensive
         logger.error(f"Failed to run cqlsh for {host}:{port}: {e}")
 
