@@ -8,16 +8,14 @@ on:
       - 'v*'      # Keep existing tag pattern for utility tool
     paths:
       - 'Dockerfile.utility'
-      - 'scripts/entrypoint.py'
-      - 'scripts/es-debug.py'
+      - 'scripts/**'
       - '.github/workflows/build-and-push.yml'
   pull_request:
     branches:
       - main
     paths:
       - 'Dockerfile.utility'
-      - 'scripts/entrypoint.py'
-      - 'scripts/es-debug.py'
+      - 'scripts/**'
       - '.github/workflows/build-and-push.yml'
 
 env:
