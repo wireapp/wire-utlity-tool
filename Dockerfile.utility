@@ -1,5 +1,5 @@
 # Use Debian Bullseye Slim as base image for better legacy support
-FROM --platform=$TARGETPLATFORM debian:bullseye-slim
+FROM debian:bullseye-slim
 
 # Install essential utilities and networking tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -34,8 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
  && curl https://bootstrap.pypa.io/pip/2.7/get-pip.py -o get-pip.py \
  && python2 get-pip.py \
- && rm get-pip.py \
- && rm -rf /var/lib/apt/lists/*
+ && rm get-pip.py
 
 # Install Python dependencies
 RUN pip3 install cassandra-driver requests
@@ -49,27 +48,33 @@ RUN mkdir -p /opt/cassandra \
 
 # Create cqlsh wrapper and install additional tools
 RUN printf '#!/bin/bash\nexport PYTHONPATH="/opt/cassandra/apache-cassandra-3.11.16/pylib:$PYTHONPATH"\nexec python2 /opt/cassandra/apache-cassandra-3.11.16/bin/cqlsh.py "$@"\n' > /usr/local/bin/cqlsh \
- && chmod +x /usr/local/bin/cqlsh \
- && wget -O /usr/local/bin/rabbitmqadmin https://raw.githubusercontent.com/rabbitmq/rabbitmq-server/main/deps/rabbitmq_management/bin/rabbitmqadmin \
- && chmod +x /usr/local/bin/rabbitmqadmin
+ && chmod +x /usr/local/bin/cqlsh
+
+# Install RabbitMQ client with pinned version
+ARG RABBITMQ_VERSION=3.13.6
+RUN curl -fsSL -o /usr/local/bin/rabbitmqadmin "https://raw.githubusercontent.com/rabbitmq/rabbitmq-server/v${RABBITMQ_VERSION}/deps/rabbitmq_management/bin/rabbitmqadmin" && chmod +x /usr/local/bin/rabbitmqadmin
+
+RUN rm -rf /var/lib/apt/lists/*
 
 # Install MinIO client for the target architecture
 ARG TARGETARCH
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-        wget https://dl.min.io/client/mc/release/linux-arm64/mc -O /usr/local/bin/mc; \
+        curl -L https://dl.min.io/client/mc/release/linux-arm64/mc -o /usr/local/bin/mc; \
     else \
-        wget https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc; \
+        curl -L https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc; \
     fi \
  && chmod +x /usr/local/bin/mc
 
-# Copy and setup scripts
-COPY scripts/entrypoint.py scripts/es-debug.py /usr/local/bin/
-RUN chmod +x /usr/local/bin/entrypoint.py /usr/local/bin/es-debug.py \
- && ln -s /usr/local/bin/es-debug.py /usr/local/bin/es \
- && ln -s /tmp/status.sh /usr/local/bin/status
-
 # Create non-root user
 RUN adduser --disabled-password --gecos "" --uid 65532 nonroot
+
+# Copy and setup scripts
+RUN mkdir /home/nonroot/scripts
+COPY scripts/*.py /home/nonroot/scripts
+RUN chmod +x /home/nonroot/scripts/entrypoint.py /home/nonroot/scripts/es-debug.py
+
+RUN ln -s /home/nonroot/scripts/es-debug.py /usr/local/bin/es
+RUN ln -s /tmp/status.sh /usr/local/bin/status
 
 # Switch to non-root user and set environment
 USER nonroot
@@ -80,4 +85,4 @@ ENV HOME=/home/nonroot \
 WORKDIR /home/nonroot
 
 # Use Python entrypoint
-ENTRYPOINT ["python3", "-u", "/usr/local/bin/entrypoint.py"]
+ENTRYPOINT ["python3", "-m", "scripts.entrypoint"]

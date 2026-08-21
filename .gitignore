@@ -2,3 +2,5 @@
 path/
 *.pyc
 __pycache__/
+# emacs
+*~
